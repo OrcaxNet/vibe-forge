@@ -1,36 +1,41 @@
-// Package api wires the HTTP routes for the Vibe Forge backend. Stage 1 ships
-// only GET /api/health for real; the remaining contract paths are registered as
-// 501 stubs so the router is a faithful scaffold of contracts/contract.json and
-// the stable error shape is demonstrated end-to-end. Stage 2/3 (FLO-55, FLO-60)
-// replace the stubs with real handlers.
+// Package api wires the HTTP routes for the Vibe Forge backend against the
+// SQLite store (package store). FLO-55 implements the persistence-layer
+// endpoints (projects, runs, versions, files, restore, manual edit) for real;
+// the agent-loop endpoints (SSE, retry, compile-result) remain stubs for
+// FLO-60. GET /api/health is real and reports sanitized dependency state.
 package api
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/OrcaxNet/vibe-forge/contracts"
 	"github.com/OrcaxNet/vibe-forge/internal/db"
+	"github.com/OrcaxNet/vibe-forge/internal/store"
 )
 
 // Version is the backend build version. Bumped per release.
-const Version = "0.1.0-skeleton"
+const Version = "0.2.0"
 
 // ContractVersion returns the shared contract version the backend is built
 // against (sourced from the embedded contract.json).
 func ContractVersion() string { return contracts.Version() }
 
-// Server holds runtime dependencies. A nil db means SQLite is not configured.
+// Server holds runtime dependencies. A nil store means SQLite is not configured;
+// mutating endpoints then return 503 DEPENDENCY_UNAVAILABLE.
 type Server struct {
-	db         *sql.DB
-	dbPath     string
-	modelKey   string
-	modelName  string
-	now        func() time.Time
+	db        *sql.DB
+	store     *store.Store
+	dbPath    string
+	modelKey  string
+	modelName string
+	now       func() time.Time
 }
 
 // New prepares the server. If DATABASE_PATH is set it opens and migrates SQLite
@@ -53,6 +58,7 @@ func New(ctx context.Context) (*Server, error) {
 			return nil, err
 		}
 		s.db = d
+		s.store = store.New(d)
 	}
 	return s, nil
 }
@@ -70,35 +76,36 @@ func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 
-	// Contract path stubs: present so the router mirrors contract.json and the
-	// stable error shape is exercised. Replaced by FLO-55 / FLO-60.
+	// Persistence-layer endpoints (FLO-55).
+	mux.HandleFunc("POST /api/projects", s.createProject)
+	mux.HandleFunc("GET /api/projects", s.listProjects)
+	mux.HandleFunc("GET /api/projects/{id}", s.getProject)
+	mux.HandleFunc("POST /api/projects/{id}/runs", s.createRun)
+	mux.HandleFunc("GET /api/projects/{id}/files", s.listFiles)
+	mux.HandleFunc("PUT /api/projects/{id}/files/src/App.tsx", s.writeFile)
+	mux.HandleFunc("GET /api/projects/{id}/versions", s.listVersions)
+	mux.HandleFunc("GET /api/projects/{id}/versions/{versionId}/files", s.versionFiles)
+	mux.HandleFunc("POST /api/projects/{id}/versions/{versionId}/restore", s.restoreVersion)
+
+	// Agent-loop endpoints (FLO-60): stubbed.
 	stub := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, "NOT_IMPLEMENTED", name+" is not implemented in the Stage 1 skeleton", false, http.StatusNotImplemented)
+			writeError(w, "NOT_IMPLEMENTED", name+" is not implemented until FLO-60 (agent loop)", false, http.StatusNotImplemented)
 		}
 	}
-	mux.HandleFunc("POST /api/projects", stub("createProject"))
-	mux.HandleFunc("GET /api/projects", stub("listProjects"))
-	mux.HandleFunc("GET /api/projects/{id}", stub("getProject"))
-	mux.HandleFunc("POST /api/projects/{id}/runs", stub("createRun"))
 	mux.HandleFunc("GET /api/runs/{id}/events", stub("runEvents"))
 	mux.HandleFunc("POST /api/runs/{id}/retry", stub("retryRun"))
-	mux.HandleFunc("GET /api/projects/{id}/files", stub("listFiles"))
-	mux.HandleFunc("PUT /api/projects/{id}/files/src/App.tsx", stub("writeFile"))
-	mux.HandleFunc("GET /api/projects/{id}/versions/{versionId}/files", stub("versionFiles"))
 	mux.HandleFunc("POST /api/runs/{id}/compile-result", stub("compileResult"))
-	mux.HandleFunc("GET /api/projects/{id}/versions", stub("listVersions"))
-	mux.HandleFunc("POST /api/projects/{id}/versions/{versionId}/restore", stub("restoreVersion"))
 	return mux
 }
 
 // Health is the dependency health body (PRD-C §5.1).
 type Health struct {
-	Status          string         `json:"status"` // "healthy" | "unhealthy"
-	ContractVersion string         `json:"contractVersion"`
-	Version         string         `json:"version"`
-	Dependencies    Deps           `json:"dependencies"`
-	Time            string         `json:"time"`
+	Status          string `json:"status"` // "healthy" | "unhealthy"
+	ContractVersion string `json:"contractVersion"`
+	Version         string `json:"version"`
+	Dependencies    Deps   `json:"dependencies"`
+	Time            string `json:"time"`
 }
 
 // Deps reports per-dependency status with sanitized details.
@@ -120,7 +127,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		Time:            s.now().Format(time.RFC3339),
 	}
 
-	// Database: ping if configured, else report not_configured.
 	switch {
 	case s.dbPath == "":
 		h.Dependencies.Database = Dep{Status: "not_configured"}
@@ -134,8 +140,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		h.Dependencies.Database = Dep{Status: "unavailable", Detail: "database not opened"}
 	}
 
-	// Model: configured iff the API key is present. We do not probe upstream in
-	// the skeleton (agent loop is Stage 3); we only report configuration state.
 	if s.modelKey == "" {
 		h.Dependencies.Model = Dep{Status: "not_configured"}
 	} else {
@@ -170,12 +174,71 @@ func writeContractError(w http.ResponseWriter, code, msg string) {
 	writeJSON(w, status, APIError{Code: code, Message: msg, Retryable: contracts.IsRetryable(code)})
 }
 
+// writeStoreErr maps a store error to the stable error shape. Store *store.Error
+// values carry a contract code; anything else is a sanitized INTERNAL 500 (no
+// stack, key or internal address leaks - C-NFR-03).
+func (s *Server) writeStoreErr(w http.ResponseWriter, err error) {
+	var se *store.Error
+	if errors.As(err, &se) {
+		writeJSON(w, contracts.HTTPStatusFor(se.Code), APIError{
+			Code: se.Code, Message: se.Message,
+			Retryable: contracts.IsRetryable(se.Code), Details: se.Details,
+		})
+		return
+	}
+	writeContractError(w, "INTERNAL", "internal error")
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// unused guard: writeContractError is part of the scaffold's public surface for
-// Stage 2/3 handlers; keep the symbol so importers can rely on it.
-var _ = writeContractError
+// writeRaw writes a pre-serialized response body (used for idempotent create
+// endpoints whose body is the exact bytes to replay).
+func writeRaw(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// requireStore returns the store or writes 503 if SQLite is not configured.
+func (s *Server) requireStore(w http.ResponseWriter) *store.Store {
+	if s.store == nil {
+		writeContractError(w, "DEPENDENCY_UNAVAILABLE", "database is not configured")
+		return nil
+	}
+	return s.store
+}
+
+// idempotencyKey reads the Idempotency-Key header (canonical), falling back to a
+// body field of the same name.
+func idempotencyKey(r *http.Request, bodyKey string) string {
+	if k := r.Header.Get(contracts.Load().Idempotency.Header); k != "" {
+		return k
+	}
+	return bodyKey
+}
+
+// requireKey writes 422 if the idempotency key is empty.
+func requireKey(w http.ResponseWriter, key string) bool {
+	if key == "" {
+		writeContractError(w, "VALIDATION_ERROR", "Idempotency-Key is required")
+		return false
+	}
+	return true
+}
+
+// decodeJSON decodes a JSON request body, treating an empty body as a validation
+// error rather than a transport error.
+func decodeJSON(r *http.Request, dst any) error {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is required")
+		}
+		return err
+	}
+	return nil
+}
