@@ -32,6 +32,47 @@ export type PreviewSnapshot = {
   files: Record<string, string>;
 };
 
+export type PreviewFailureKind =
+  | "validation_timeout"
+  | "resource_timeout"
+  | "runtime_error";
+
+export const PREVIEW_READY_TIMEOUT_MS = 10_000;
+
+export class PreviewDeadlineError extends Error {
+  readonly kind: PreviewFailureKind;
+
+  constructor(kind: PreviewFailureKind, message: string) {
+    super(message);
+    this.name = "PreviewDeadlineError";
+    this.kind = kind;
+  }
+}
+
+export function withPreviewDeadline<T>(
+  operation: Promise<T>,
+  kind: PreviewFailureKind,
+  message: string,
+  timeoutMs = PREVIEW_READY_TIMEOUT_MS,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = globalThis.setTimeout(
+      () => reject(new PreviewDeadlineError(kind, message)),
+      timeoutMs,
+    );
+    operation.then(
+      (value) => {
+        globalThis.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        globalThis.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
