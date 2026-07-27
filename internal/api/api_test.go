@@ -104,22 +104,66 @@ func TestHealthReadyWithDeps(t *testing.T) {
 	}
 }
 
-// TestStubReturnsStableError verifies a still-stubbed (FLO-60) contract path
-// responds with the stable error structure.
-func TestStubReturnsStableError(t *testing.T) {
+// TestCompileResultRecordsArtifact (FLO-60): POST /api/runs/:id/compile-result
+// is a real idempotent recorder now (no longer a 501 stub). A valid body for an
+// existing attempt returns 200 and binds a qa compile_result artifact; an empty
+// body returns 422 VALIDATION_ERROR.
+func TestCompileResultRecordsArtifact(t *testing.T) {
 	srv := newAPITestServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/runs/some-run/compile-result", nil)
-	rec := httptest.NewRecorder()
-	srv.Router().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501", rec.Code)
+	_, body := doJSON(t, srv, "POST", "/api/projects", "pk",
+		map[string]string{"initialPrompt": "build an app"})
+	var p struct {
+		ID string `json:"id"`
 	}
-	var e APIError
-	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
-		t.Fatalf("decode: %v", err)
+	json.Unmarshal(body, &p)
+
+	s, rb := doJSON(t, srv, "POST", "/api/projects/"+p.ID+"/runs", "rk",
+		map[string]string{"prompt": "build an app"})
+	if s != 202 {
+		t.Fatalf("create run status = %d, want 202 (body=%s)", s, rb)
 	}
-	if e.Code == "" || e.Message == "" {
-		t.Errorf("error missing code/message: %+v", e)
+	var run struct {
+		RunID string `json:"runId"`
+	}
+	json.Unmarshal(rb, &run)
+
+	// Empty body -> 422 VALIDATION_ERROR.
+	es, _ := doJSON(t, srv, "POST", "/api/runs/"+run.RunID+"/compile-result", "", nil)
+	if es != 422 {
+		t.Fatalf("empty compile-result status = %d, want 422", es)
+	}
+
+	// Valid body for attempt 1 -> 200 and a qa artifact on the project.
+	cs, _ := doJSON(t, srv, "POST", "/api/runs/"+run.RunID+"/compile-result", "",
+		map[string]any{
+			"attempt":   1,
+			"errors":    []map[string]any{{"file": "/src/App.tsx", "line": 3, "message": "missing )"}},
+			"filesHash": "abc",
+		})
+	if cs != 200 {
+		t.Fatalf("compile-result status = %d, want 200", cs)
+	}
+
+	// Repeating the same body is idempotent (still 200, no duplicate artifact).
+	doJSON(t, srv, "POST", "/api/runs/"+run.RunID+"/compile-result", "",
+		map[string]any{"attempt": 1, "errors": []map[string]any{{"file": "/src/App.tsx", "line": 3, "message": "missing )"}}, "filesHash": "abc"})
+
+	ds, db := doJSON(t, srv, "GET", "/api/projects/"+p.ID, "", nil)
+	if ds != 200 {
+		t.Fatalf("get project status = %d, want 200 (body=%s)", ds, db)
+	}
+	var detail struct {
+		Artifacts []map[string]any `json:"artifacts"`
+	}
+	json.Unmarshal(db, &detail)
+	qaCount := 0
+	for _, a := range detail.Artifacts {
+		if a["stage"] == "qa" && a["artifactType"] == "compile_result" {
+			qaCount++
+		}
+	}
+	if qaCount != 1 {
+		t.Errorf("qa compile_result artifacts = %d, want 1 (idempotent)", qaCount)
 	}
 }
 

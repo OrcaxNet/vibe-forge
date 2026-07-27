@@ -41,6 +41,21 @@ func main() {
 	}
 	defer srv.Close()
 
+	// Reconcile runs left active by a prior crash: a queued/running run that did
+	// not reach a terminal state is flipped to 'interrupted' so it is not stuck
+	// "active" (C-FR-06/07). The user can retry an interrupted run.
+	if n, err := srv.ReconcileInterruptedRuns(ctx); err != nil {
+		log.Printf("WARNING: failed to reconcile interrupted runs: %v", err)
+	} else if n > 0 {
+		log.Printf("reconciled %d interrupted run(s) left active by a prior crash", n)
+	}
+
+	// Wire the agent loop (FLO-60) if the store and model are configured. With no
+	// model key, run creation stays rejected and this is a no-op.
+	if err := srv.InitLoop(); err != nil {
+		log.Fatalf("agent loop init failed: %v", err)
+	}
+
 	httpSrv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           srv.Router(),
