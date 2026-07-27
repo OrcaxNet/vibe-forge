@@ -58,6 +58,17 @@ button {
   text-wrap: balance;
 }
 
+.sp-wrapper,
+.sp-stack,
+.sp-preview,
+.sp-preview-container {
+  height: 100%;
+}
+
+.sp-preview-iframe {
+  background: #fff;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
