@@ -10,11 +10,14 @@ import (
 )
 
 // newAPITestServer returns a server backed by an in-memory SQLite DB and a
-// configured model key.
+// configured model key. It clears the bearer-token env vars so the suite is
+// hermetic against a runner that exports ANTHROPIC_AUTH_TOKEN/BASE_URL.
 func newAPITestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("DATABASE_PATH", ":memory:")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 	srv, err := New(context.Background())
 	if err != nil {
@@ -47,9 +50,16 @@ func doJSON(t *testing.T, srv *Server, method, path, key string, body any) (int,
 }
 
 // TestHealthNotReadyStructurallyCorrect is the backend smoke: with no
-// DATABASE_PATH and no ANTHROPIC_API_KEY, GET /api/health returns 503 with a
+// DATABASE_PATH and no model credentials, GET /api/health returns 503 with a
 // structurally correct, sanitized body (Stage 1 acceptance criterion 3).
 func TestHealthNotReadyStructurallyCorrect(t *testing.T) {
+	// Force the "nothing configured" state regardless of the ambient runtime env
+	// (a Claude Code runner exports ANTHROPIC_AUTH_TOKEN/BASE_URL); the test must
+	// prove the not-ready body, not the runner's credentials.
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("DATABASE_PATH", "")
 	srv, err := New(context.Background())
 	if err != nil {
 		t.Fatalf("New: %v", err)

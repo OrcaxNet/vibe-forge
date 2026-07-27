@@ -5,12 +5,13 @@ of four real, serial stages — `pm → architect → engineer → qa` — obser
 via SSE, previewed in-browser with **Sandpack**, and persisted to **SQLite** as
 the single source of truth.
 
-> **Stage 3 frontend.** The repository now includes the workbench UI (FLO-54),
-> SQLite persistence/API (FLO-55), and the Sandpack preview, file editor and
-> version workflow (FLO-56). The agent loop/SSE backend (FLO-60) remains the
-> active integration dependency. Today you get a runnable frontend + backend,
-> `GET /api/health`, idempotent migrations, the project/run/version/file REST
-> API, and a real in-browser stable-preview path.
+> **Stage 4.** The full local-first loop is wired: workbench UI (FLO-54), SQLite
+> persistence/API (FLO-55), Sandpack preview + file/version workflow (FLO-56),
+> the single agent loop + SSE + auto-repair (FLO-60), and OrbStack local
+> integration + restart recovery (FLO-59). A fresh clone is usable on OrbStack
+> with one command; a run interrupted by a restart is reconciled to
+> `interrupted` and retried with a new attempt. Online deploy (FLO-57) and the
+> final submission pack (FLO-62) are the remaining stages.
 
 ## Architecture (main path)
 
@@ -33,25 +34,62 @@ the single source of truth.
 
 ## Quick start (OrbStack / Docker, local-first)
 
+One command brings up the frontend, backend and SQLite volume on OrbStack:
+
 ```bash
-cp .env.example .env        # then edit .env and set ANTHROPIC_API_KEY
+cp .env.example .env        # then edit .env and set model credentials
 docker compose up --build
 ```
 
 - Frontend: http://localhost:5173
 - Backend health: http://localhost:8787/api/health
 
-Until `ANTHROPIC_API_KEY` is set, `/api/health` returns `503` with a
-structurally-correct, sanitized body (`database: ok`, `model: not_configured`).
-That is the intended "not ready" state for the skeleton.
+A fresh clone is usable within a couple of minutes once base images are cached
+(`--build` compiles the Go binary and Vite assets). The first build pulls the
+`golang`, `node` and `nginx` base images; subsequent builds are fast.
+
+The agent loop needs model credentials - pick **one** auth mode in `.env`:
+
+- **Mode A (default):** `ANTHROPIC_API_KEY=sk-...` (direct Anthropic API).
+- **Mode B (gateway):** `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL` for an
+  Anthropic-compatible platform proxy (also set `ANTHROPIC_MODEL` to the name
+  your gateway expects).
+
+Until credentials are set, `/api/health` returns `503` with a
+structurally-correct, sanitized body (`database: ok`, `model: not_configured`)
+and the backend logs an actionable warning naming the exact variables to set.
+Run creation is rejected until the model is configured; the rest of the API
+(projects, versions, files) still serves.
 
 > ⚠️ `docker compose down -v` **deletes the SQLite volume and all project
 > data.** Use `docker compose down` (without `-v`) to keep data across restarts.
+> `docker compose restart` and `down`/`up` (no `-v`) both preserve the volume;
+> see [Restart recovery](#restart-recovery) below.
+
+## Restart recovery
+
+SQLite on the mounted volume is the single source of truth, so a restart never
+loses committed data. A run that is mid-flight (`queued`/`running`) when the
+backend stops is reconciled on the next startup:
+
+- On boot the backend flips every `queued`/`running` run to `interrupted`
+  (`reconciled N interrupted run(s)` log line) and releases the per-project
+  active-run lock. It never resumes a run as if it never stopped - an
+  interrupted run is surfaced to the client as a retryable `run_failed` over
+  SSE.
+- `POST /api/runs/:id/retry` starts a **new attempt** (retry never fakes
+  "continue"); it is idempotent on `Idempotency-Key`, so a repeated retry does
+  not create a second attempt.
+- `docker compose restart` and `down`/`up` (without `-v`) both preserve
+  projects, messages, stage artifacts, files and `stableVersionId`; terminal
+  runs (`succeeded`/`failed`/`interrupted`) are never resurrected.
 
 ## Environment variables
 
-See [`.env.example`](./.env.example). Required: `ANTHROPIC_API_KEY`. The backend
-logs an actionable warning at startup when it is missing.
+See [`.env.example`](./.env.example). Required (one mode): `ANTHROPIC_API_KEY`,
+or `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`. Optional: `ANTHROPIC_MODEL`,
+`PORT`/`DATABASE_PATH` (overridable via compose). The backend logs an actionable
+warning at startup when no credentials are present.
 
 ## Smoke commands
 
@@ -80,10 +118,12 @@ contracts/        shared contract (single source of truth) — JSON + Go embed +
   contract.json   ← frozen from PRD-A/B/C §5
   contract.go     ← backend typed accessors (go:embed)
   contract_test.go
-cmd/server/       backend entrypoint
-internal/api/     HTTP router + persistence REST API (projects, runs, versions, files)
+cmd/server/       backend entrypoint (startup, reconcile, redacting logger)
+internal/api/     HTTP router + persistence REST API + SSE/retry/compile-result
+internal/agent/   single agent loop (PM->Architect->Engineer->QA) + SSE + auto-repair
 internal/db/      SQLite open (WAL, foreign_keys) + idempotent migration runner + 0001_init.sql
 internal/store/   SQLite store: projects, runs, versions, files; idempotency + atomic version commit
+internal/logredact/ secret-scrubbing logger for run-lifecycle lines
 frontend/         React + TS + Vite + Tailwind workbench
   src/App.tsx     ← home, Build Pulse and workspace orchestration
   src/WorkspacePanel.tsx ← Sandpack preview, file editor and version history
@@ -110,14 +150,18 @@ See [`contracts/README.md`](./contracts/README.md) for the full breakdown.
 
 ## Status
 
-**Done (Stage 1–3 frontend):** public repo, workbench UI, lockfiles, license,
+**Done (Stage 1–4):** public repo, workbench UI, lockfiles, license,
 `compose.yaml`, `.env.example`, frozen shared contract, SQLite store (WAL +
-foreign_keys + migration), persistence REST API, stable Sandpack preview,
-files-map integrity verification, App.tsx editing, version history/restore and
-manual-vs-agent locking; all backed by automated tests.
+foreign_keys + idempotent migration), persistence REST API, stable Sandpack
+preview, files-map integrity verification, App.tsx editing, version
+history/restore and manual-vs-agent locking, single agent loop (PM -> Architect
+-> Engineer -> QA) with SSE stream + `Last-Event-ID` replay and bounded
+auto-repair, OrbStack local integration with restart recovery (interrupted-run
+reconcile + retry), bearer-token gateway auth, sanitized run-lifecycle logging;
+all backed by automated tests.
 
-**Not done (later stages):** single agent loop, live SSE/compile-result backend
-wiring, online deploy and final QA.
+**Not done (later stages):** online deploy (FLO-57) and final submission pack
+(FLO-62).
 
 ## Frontend preview dependencies
 

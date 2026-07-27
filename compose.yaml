@@ -15,10 +15,15 @@ services:
     container_name: vibe-forge-backend
     # `${VAR:-}` keeps `docker compose config` valid even before .env exists;
     # the backend logs an actionable hint at startup when a required var is empty.
+    # Auth is either ANTHROPIC_API_KEY (direct) or ANTHROPIC_AUTH_TOKEN +
+    # ANTHROPIC_BASE_URL (bearer-token gateway, e.g. an Anthropic-compatible
+    # platform proxy). At least one must be set for the agent loop to run.
     environment:
       PORT: "8787"
       DATABASE_PATH: /data/vibe-forge.db
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
     volumes:
       - vibe-forge-db:/data

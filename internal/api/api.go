@@ -42,12 +42,29 @@ type Server struct {
 	db        *sql.DB
 	store     *store.Store
 	dbPath    string
-	modelKey  string
+	modelKey  string // ANTHROPIC_API_KEY (mutually exclusive with authToken)
+	authToken string // ANTHROPIC_AUTH_TOKEN bearer auth (platform proxy)
+	baseURL   string // ANTHROPIC_BASE_URL override (required with authToken)
 	modelName string
 	now       func() time.Time
-	loop      LoopRunner // nil until InitLoop; createRun/retry launch it if set
+	logf      func(string, ...any) // redacting logger; no-op until SetLogger
+	loop      LoopRunner           // nil until InitLoop; createRun/retry launch it if set
 	loopCtx   context.Context
 	loopStop  context.CancelFunc
+}
+
+// modelConfigured reports whether the agent loop can be built: either an API key
+// or an auth token (with base URL) is present. Used by health, createRun and
+// retryRun so the "not ready" surface is consistent across auth modes.
+func (s *Server) modelConfigured() bool { return s.modelKey != "" || s.authToken != "" }
+
+// SetLogger installs a Printf-style logger used by the agent loop for
+// run-lifecycle lines. main passes a redacting logger so secrets are scrubbed;
+// tests inject a no-op. Must be called before InitLoop to take effect.
+func (s *Server) SetLogger(f func(string, ...any)) {
+	if f != nil {
+		s.logf = f
+	}
 }
 
 // New prepares the server. If DATABASE_PATH is set it opens and migrates SQLite
@@ -57,8 +74,11 @@ func New(ctx context.Context) (*Server, error) {
 	s := &Server{
 		dbPath:    os.Getenv("DATABASE_PATH"),
 		modelKey:  os.Getenv("ANTHROPIC_API_KEY"),
+		authToken: os.Getenv("ANTHROPIC_AUTH_TOKEN"),
+		baseURL:   os.Getenv("ANTHROPIC_BASE_URL"),
 		modelName: os.Getenv("ANTHROPIC_MODEL"),
 		now:       func() time.Time { return time.Now().UTC() },
+		logf:      func(string, ...any) {},
 	}
 	// The loop context outlives any single HTTP request (the agent run continues
 	// after the 202 is returned) but is cancelled on Close/shutdown.
@@ -81,21 +101,26 @@ func New(ctx context.Context) (*Server, error) {
 }
 
 // InitLoop constructs and installs the real agent loop (FLO-60) when the store
-// and model key are configured. Called by main after New. If the model is not
+// and model are configured. Called by main after New. If the model is not
 // configured, run creation stays rejected and no loop is wired (the rest of the
 // API still serves). Returns an error only if the store is configured but the
-// loop cannot be built.
+// loop cannot be built. Auth is either an API key or an auth token + base URL
+// (e.g. an Anthropic-compatible platform proxy); both are supported so the same
+// image runs with a direct key or a bearer-token gateway.
 func (s *Server) InitLoop() error {
-	if s.store == nil || s.modelKey == "" {
+	if s.store == nil || !s.modelConfigured() {
 		return nil
 	}
 	loop, err := agent.NewLoop(s.store, agent.LoopConfig{
-		APIKey: s.modelKey,
-		Model:  s.modelName,
+		APIKey:    s.modelKey,
+		AuthToken: s.authToken,
+		BaseURL:   s.baseURL,
+		Model:     s.modelName,
 	})
 	if err != nil {
 		return err
 	}
+	loop.SetLogger(s.logf)
 	s.loop = loop
 	return nil
 }
@@ -189,7 +214,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		h.Dependencies.Database = Dep{Status: "unavailable", Detail: "database not opened"}
 	}
 
-	if s.modelKey == "" {
+	if !s.modelConfigured() {
 		h.Dependencies.Model = Dep{Status: "not_configured"}
 	} else {
 		h.Dependencies.Model = Dep{Status: "configured"}

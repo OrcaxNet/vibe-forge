@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OrcaxNet/vibe-forge/internal/api"
+	"github.com/OrcaxNet/vibe-forge/internal/logredact"
 )
 
 func main() {
@@ -24,11 +25,21 @@ func main() {
 		port = "8787"
 	}
 
-	// Actionable hints for missing required configuration (criterion 2). The
+	// Actionable hints for missing required configuration (criterion 4). The
 	// server still starts so /api/health can report the not-ready state, but we
-	// make the fix loud at the top of the log.
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		log.Printf("WARNING: ANTHROPIC_API_KEY is not set. Copy .env.example to .env and set it; the backend will start but /api/health reports model not_configured (503) and run creation will be rejected until it is provided.")
+	// make the fix loud at the top of the log. The agent loop accepts either an
+	// API key (ANTHROPIC_API_KEY) or a bearer token + base URL
+	// (ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL, e.g. an Anthropic-compatible
+	// platform proxy); both being absent is the "not ready" case.
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	if apiKey == "" && authToken == "" {
+		log.Printf("WARNING: no model credentials configured (ANTHROPIC_API_KEY is empty and ANTHROPIC_AUTH_TOKEN is empty). " +
+			"Copy .env.example to .env and set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL for a bearer-token gateway). " +
+			"The backend will start but /api/health reports model not_configured (503) and run creation will be rejected until configured.")
+	}
+	if authToken != "" && os.Getenv("ANTHROPIC_BASE_URL") == "" {
+		log.Printf("WARNING: ANTHROPIC_AUTH_TOKEN is set but ANTHROPIC_BASE_URL is empty; a bearer token requires a base URL. Set ANTHROPIC_BASE_URL or use ANTHROPIC_API_KEY instead.")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -40,6 +51,12 @@ func main() {
 		log.Fatalf("startup failed (refusing to serve): %v", err)
 	}
 	defer srv.Close()
+
+	// Install a redacting logger for agent run-lifecycle lines. The live secret
+	// values are passed in so any accidental leak in an upstream error string is
+	// scrubbed to [REDACTED] before reaching container stdout (FLO-59: logs must
+	// contain no keys, full prompts or generated code).
+	srv.SetLogger(logredact.New(log.Default().Writer(), []string{apiKey, authToken}).Printf)
 
 	// Reconcile runs left active by a prior crash: a queued/running run that did
 	// not reach a terminal state is flipped to 'interrupted' so it is not stuck
