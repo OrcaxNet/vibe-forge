@@ -1,0 +1,61 @@
+# Vibe Forge local-first compose (OrbStack / Docker).
+#
+# One command to run everything: `docker compose up --build`.
+# Copy .env.example to .env and fill in ANTHROPIC_API_KEY first.
+#
+# Architecture: SQLite (mounted volume) is the single source of truth; Sandpack
+# (in-browser) is the only preview path. No per-project Docker/Vite preview
+# containers, no traefik, no IndexedDB, no runtime `npm install`.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: vibe-forge-backend:dev
+    container_name: vibe-forge-backend
+    # `${VAR:-}` keeps `docker compose config` valid even before .env exists;
+    # the backend logs an actionable hint at startup when a required var is empty.
+    environment:
+      PORT: "8787"
+      DATABASE_PATH: /data/vibe-forge.db
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+    volumes:
+      - vibe-forge-db:/data
+    ports:
+      - "8787:8787"
+    healthcheck:
+      # Liveness: the container is healthy while the HTTP server responds with
+      # any status (200 ready or 503 not-ready). Readiness detail lives in the
+      # /api/health body, not the container state.
+      test:
+        - CMD-SHELL
+        - "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health | grep -Eq '^[1-5][0-9]{2}$' || exit 1"
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: vibe-forge-frontend:dev
+    container_name: vibe-forge-frontend
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "5173:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  vibe-forge-db:
+    name: vibe-forge-db

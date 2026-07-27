@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+# Vibe Forge backend - Go monolith with embedded contract + migrations.
+# CGO_ENABLED=0 because the SQLite driver (modernc.org/sqlite) is pure Go, so
+# the binary is fully static. The contract and migrations are embedded at build
+# time; the runtime image needs no source.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
+    -o /out/vibe-forge ./cmd/server
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates wget curl \
+ && addgroup -S app && adduser -S app -G app \
+ && mkdir -p /data && chown -R app:app /data
+WORKDIR /
+COPY --from=build /out/vibe-forge /usr/local/bin/vibe-forge
+ENV PORT=8787 \
+    DATABASE_PATH=/data/vibe-forge.db
+EXPOSE 8787
+USER app
+ENTRYPOINT ["/usr/local/bin/vibe-forge"]

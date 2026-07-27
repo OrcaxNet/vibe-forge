@@ -1,0 +1,29 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+coverage.out
+vendor/
+
+# Local environment / runtime data
+.env
+*.db
+*.db-wal
+*.db-shm
+/data/
+vibe-forge.db*
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+node_modules/
+dist/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

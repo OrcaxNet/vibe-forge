@@ -1,0 +1,14 @@
+{
+  "name": "vibe-forge-scaffold",
+  "version": "1.0.0",
+  "description": "Fixed React + Tailwind scaffold that Vibe Forge compiles in Sandpack. Only /src/App.tsx is writable; every other file is read-only. Pinned here so the Engineer stage and Sandpack preview share one source. See contract §limits.writableFilePath.",
+  "entry": "/src/main.tsx",
+  "html": "/index.html",
+  "writableFilePath": "/src/App.tsx",
+  "files": [
+    { "path": "/index.html", "readonly": true },
+    { "path": "/src/main.tsx", "readonly": true },
+    { "path": "/src/index.css", "readonly": true },
+    { "path": "/src/App.tsx", "readonly": false }
+  ]
+}

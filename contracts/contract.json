@@ -1,0 +1,232 @@
+{
+  "$schema": "https://vibe-forge.dev/contract/v1",
+  "name": "vibe-forge",
+  "version": "1.0.0",
+  "description": "Vibe Forge shared contract. Single source of truth for state enums, REST paths, SSE events, idempotency and error structure. Frozen from PRD-A/B/C v1.0 section 5. Both the Go backend and the React frontend MUST consume this file directly (backend via go:embed, frontend via JSON import) so the two cannot drift.",
+  "source": ["PRD-A v1.0 §5", "PRD-B v1.0 §5", "PRD-C v1.0 §5"],
+  "stages": {
+    "order": ["pm", "architect", "engineer", "qa"],
+    "descriptions": {
+      "pm": "Product Manager: clarifies intent, produces spec.",
+      "architect": "Architect: produces structure plan.",
+      "engineer": "Engineer: writes the single business file /src/App.tsx.",
+      "qa": "QA: compiles via Sandpack and validates the result."
+    }
+  },
+  "states": {
+    "project": {
+      "type": "string",
+      "values": ["draft", "active", "archived"]
+    },
+    "run": {
+      "type": "string",
+      "values": ["queued", "running", "succeeded", "failed", "interrupted"]
+    },
+    "version": {
+      "type": "string",
+      "values": ["draft", "validating", "stable", "failed"]
+    },
+    "stageNode": {
+      "type": "string",
+      "values": ["pending", "running", "succeeded", "failed"],
+      "note": "Per-node Build Pulse state. A node may only become succeeded when its artifactRef is present."
+    }
+  },
+  "artifactTypes": {
+    "pm": "spec",
+    "architect": "structure_plan",
+    "engineer": "file_ref",
+    "qa": "compile_result"
+  },
+  "events": {
+    "protocol": {
+      "contentType": "text/event-stream",
+      "seq": "Monotonic per-run integer sequence. Clients dedupe and replay by seq.",
+      "replayHeader": "Last-Event-ID",
+      "terminalEvents": ["run_completed", "run_failed"]
+    },
+    "definitions": {
+      "run_started": {
+        "fields": { "runId": "uuid", "projectId": "uuid", "iterationId": "uuid" },
+        "semantic": "Create this run's timeline and enter running."
+      },
+      "stage_started": {
+        "fields": { "runId": "uuid", "stage": "Stage", "sequence": "int" },
+        "semantic": "Activate the PM/Architect/Engineer/QA node."
+      },
+      "stage_artifact": {
+        "fields": { "stage": "Stage", "artifactType": "ArtifactType", "artifactRef": "string" },
+        "semantic": "Bind a real artifact to a node. A node without artifactRef may not show succeeded."
+      },
+      "message_delta": {
+        "fields": { "runId": "uuid", "text": "string", "seq": "int" },
+        "semantic": "Stream agent-visible output incrementally; dedupe by seq."
+      },
+      "file_written": {
+        "fields": { "runId": "uuid", "path": "string", "versionDraftId": "uuid" },
+        "semantic": "Refresh the file tree. Does NOT switch the stable preview."
+      },
+      "preview_ready": {
+        "fields": { "runId": "uuid", "versionId": "uuid" },
+        "semantic": "Version transaction committed; atomically switch the stable preview. Idempotent."
+      },
+      "run_failed": {
+        "fields": { "runId": "uuid", "stage": "Stage|null", "code": "RunFailureCode", "retryable": "boolean" },
+        "semantic": "Show an in-place error and retry; keep the previous stable version."
+      },
+      "run_completed": {
+        "fields": { "runId": "uuid", "versionId": "uuid", "durationMs": "int" },
+        "semantic": "All stages done; iteration and version persisted."
+      }
+    }
+  },
+  "paths": {
+    "createProject": {
+      "method": "POST",
+      "path": "/api/projects",
+      "request": { "title": "string?", "initialPrompt": "string", "idempotencyKey": "string" },
+      "success": { "status": 201, "body": "Project" },
+      "errors": { "422": "VALIDATION_ERROR", "dupKey": "return the same Project" }
+    },
+    "listProjects": {
+      "method": "GET",
+      "path": "/api/projects",
+      "success": { "status": 200, "body": "Project[]", "sort": "updatedAt desc" }
+    },
+    "getProject": {
+      "method": "GET",
+      "path": "/api/projects/:id",
+      "success": { "status": 200, "body": "ProjectDetail" },
+      "errors": { "404": "NOT_FOUND (must not leak other projects)" }
+    },
+    "createRun": {
+      "method": "POST",
+      "path": "/api/projects/:id/runs",
+      "request": { "prompt": "string", "baseVersionId": "uuid?", "idempotencyKey": "string" },
+      "success": { "status": 202, "body": { "runId": "uuid" } },
+      "errors": { "409": "CONFLICT (active run)" },
+      "note": "Natural-language second edits reuse the unified run."
+    },
+    "runEvents": {
+      "method": "GET",
+      "path": "/api/runs/:id/events",
+      "type": "sse",
+      "success": { "status": 200, "contentType": "text/event-stream" }
+    },
+    "retryRun": {
+      "method": "POST",
+      "path": "/api/runs/:id/retry",
+      "request": { "attemptId": "uuid", "idempotencyKey": "string" },
+      "success": { "status": 202, "body": { "attemptId": "uuid" } },
+      "errors": { "409": "CONFLICT (not retryable)" }
+    },
+    "listFiles": {
+      "method": "GET",
+      "path": "/api/projects/:id/files",
+      "success": { "status": 200, "body": "FileTree (stable+draft, readonly markers)" },
+      "note": "Paths must be normalized."
+    },
+    "writeFile": {
+      "method": "PUT",
+      "path": "/api/projects/:id/files/src/App.tsx",
+      "request": { "content": "string", "baseVersionId": "uuid", "idempotencyKey": "string" },
+      "success": { "status": 202, "body": "Iteration (manual)" },
+      "errors": { "409": "CONFLICT (active run or baseVersion mismatch)", "422": "VALIDATION_ERROR (path/size)" }
+    },
+    "versionFiles": {
+      "method": "GET",
+      "path": "/api/projects/:id/versions/:versionId/files",
+      "success": { "status": 200, "body": "SandpackFilesMap" },
+      "errors": { "404": "NOT_FOUND" }
+    },
+    "compileResult": {
+      "method": "POST",
+      "path": "/api/runs/:id/compile-result",
+      "request": { "attempt": "int", "errors": "CompileError[]", "filesHash": "string" },
+      "success": { "status": 200 },
+      "note": "Internal/protected callback. Idempotent."
+    },
+    "listVersions": {
+      "method": "GET",
+      "path": "/api/projects/:id/versions",
+      "success": { "status": 200, "body": "Version[]", "note": "No full code by default." }
+    },
+    "restoreVersion": {
+      "method": "POST",
+      "path": "/api/projects/:id/versions/:versionId/restore",
+      "request": { "idempotencyKey": "string" },
+      "success": { "status": 202, "body": "Iteration (restore)" },
+      "errors": { "409": "CONFLICT" }
+    },
+    "health": {
+      "method": "GET",
+      "path": "/api/health",
+      "success": { "status": 200, "body": "Health (healthy)" },
+      "errors": { "503": "DEPENDENCY_UNAVAILABLE (sanitized message)" }
+    }
+  },
+  "idempotency": {
+    "header": "Idempotency-Key",
+    "ttlSeconds": 30,
+    "appliesTo": ["createProject", "createRun", "retryRun", "writeFile", "restoreVersion"],
+    "rule": "Repeating the same Idempotency-Key within ttlSeconds returns the original result without creating a duplicate. Required on the mutating endpoints listed above."
+  },
+  "errors": {
+    "structure": {
+      "code": "Stable machine-readable string (see codes).",
+      "message": "Human-displayable, sanitized. No API keys, stack traces or internal addresses.",
+      "retryable": "boolean",
+      "details": "object? (optional, field-level validation errors)"
+    },
+    "codes": {
+      "VALIDATION_ERROR": { "http": 422, "retryable": false },
+      "NOT_FOUND": { "http": 404, "retryable": false },
+      "CONFLICT": { "http": 409, "retryable": false },
+      "RATE_LIMITED": { "http": 429, "retryable": true },
+      "DEPENDENCY_UNAVAILABLE": { "http": 503, "retryable": true },
+      "INTERNAL": { "http": 500, "retryable": true }
+    },
+    "runFailureCodes": {
+      "TIMEOUT": "Run watchdog fired (no effective event within watchdogSeconds).",
+      "RATE_LIMITED": "Upstream 429.",
+      "UPSTREAM_ERROR": "Upstream 5xx.",
+      "COMPILE_FAILED": "Sandpack compilation failed after maxAutoFixRounds.",
+      "INTERNAL": "Unexpected internal error."
+    }
+  },
+  "limits": {
+    "promptMinChars": 1,
+    "promptMaxChars": 4000,
+    "fileContentMaxBytes": 204800,
+    "writableFilePath": "/src/App.tsx",
+    "filePathConvention": "POSIX absolute project-internal path; only /src/App.tsx is writable; all scaffold files are read-only.",
+    "runWatchdogSeconds": 60,
+    "sandpackReadyTimeoutSeconds": 10,
+    "maxAutoFixRounds": 2
+  },
+  "concurrency": {
+    "singleActiveRun": "At most one active (queued/running) run per project. A second submission returns 409 with activeRunId.",
+    "manualVsAgentMutex": "A manual iteration (PUT file) and an agent run are mutually exclusive.",
+    "optimisticLock": "baseVersionId is an optimistic lock; mismatch returns 409.",
+    "stableVersionAtomic": "stableVersionId only switches atomically to a stable version inside the success transaction."
+  },
+  "storage": {
+    "sourceOfTruth": "SQLite on a declared persistent volume. IndexedDB is NOT a source of truth.",
+    "pragma": ["journal_mode=WAL", "foreign_keys=ON"],
+    "timeFormat": "UTC ISO-8601",
+    "idFormat": "unpredictable UUID v4",
+    "isolation": "All foreign keys isolate by projectId.",
+    "migration": "Schema migration runs on startup; failure MUST stop startup (no silent skip). Migrations are idempotent."
+  },
+  "models": {
+    "Project": { "id": "uuid", "title": "string", "status": "ProjectStatus", "stableVersionId": "uuid?", "createdAt": "timestamp", "updatedAt": "timestamp" },
+    "Message": { "id": "uuid", "projectId": "uuid", "role": "user|assistant", "content": "string", "createdAt": "timestamp" },
+    "Run": { "id": "uuid", "projectId": "uuid", "status": "RunStatus", "prompt": "string", "baseVersionId": "uuid?", "activeAttemptId": "uuid?", "createdAt": "timestamp", "updatedAt": "timestamp" },
+    "Attempt": { "id": "uuid", "runId": "uuid", "sequence": "int", "status": "RunStatus", "autoFixRound": "int", "createdAt": "timestamp" },
+    "StageArtifact": { "id": "uuid", "runId": "uuid", "attemptId": "uuid", "stage": "Stage", "artifactType": "ArtifactType", "artifactRef": "string", "createdAt": "timestamp" },
+    "Iteration": { "id": "uuid", "projectId": "uuid", "runId": "uuid?", "kind": "agent|manual|restore", "baseVersionId": "uuid?", "resultVersionId": "uuid?", "prompt": "string?", "createdAt": "timestamp" },
+    "Version": { "id": "uuid", "projectId": "uuid", "iterationId": "uuid", "status": "VersionStatus", "filesHash": "string?", "createdAt": "timestamp" },
+    "File": { "id": "uuid", "versionId": "uuid", "path": "string", "content": "string", "readonly": "boolean" },
+    "Event": { "id": "uuid", "runId": "uuid", "seq": "int", "type": "EventType", "payload": "object", "createdAt": "timestamp" }
+  }
+}
