@@ -28,3 +28,8 @@ dist/
 .idea/
 .vscode/
 *.swp
+
+# FLO-60 smoke artifacts (generated, not committed)
+internal/agent/tenprompts/
+internal/agent/ten_prompts_results.json
+ten_smoke*.log
