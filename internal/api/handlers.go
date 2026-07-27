@@ -71,12 +71,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if st == nil {
 		return
 	}
-	// PRD-C / Stage 1 contract: run creation is rejected until the model is
-	// configured (the agent loop cannot progress without it).
-	if !s.modelConfigured() {
-		writeContractError(w, "DEPENDENCY_UNAVAILABLE", "model is not configured")
-		return
-	}
 	var req struct {
 		Prompt         string `json:"prompt"`
 		BaseVersionID  string `json:"baseVersionId"`
@@ -90,9 +84,19 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if !requireKey(w, key) {
 		return
 	}
-	status, body, replayed, err := st.CreateRun(r.Context(), r.PathValue("id"), req.Prompt, req.BaseVersionID, key)
+	// canStart reports whether the agent loop can run (model configured). When it
+	// cannot, CreateRun still persists the run as 'failed' with a run_failed
+	// event, and the initial user message (from createProject) is already durable
+	// - so a refresh after the 503 retains the prompt, the failure context and
+	// the retry entry. No duplicate project or message is created (VF-P0-03).
+	canStart := s.modelConfigured()
+	status, body, replayed, err := st.CreateRun(r.Context(), r.PathValue("id"), req.Prompt, req.BaseVersionID, key, canStart)
 	if err != nil {
 		s.writeStoreErr(w, err)
+		return
+	}
+	if !canStart {
+		writeContractError(w, "DEPENDENCY_UNAVAILABLE", "model is not configured")
 		return
 	}
 	// Launch the agent loop for the new run. Only on a genuine create (not an

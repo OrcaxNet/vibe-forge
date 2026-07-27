@@ -60,7 +60,7 @@ func TestSmokeRealAPI(t *testing.T) {
 		ID string `json:"id"`
 	}
 	json.Unmarshal(pbody, &p)
-	_, rbody, _, err := st.CreateRun(context.Background(), p.ID, prompt, "", "smoke-rk")
+	_, rbody, _, err := st.CreateRun(context.Background(), p.ID, prompt, "", "smoke-rk", true)
 	if err != nil {
 		t.Fatal(err)
 	}
