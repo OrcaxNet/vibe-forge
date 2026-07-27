@@ -74,6 +74,9 @@ const versions = [
 
 let stableVersionId = versionOne;
 let activeRunMode = false;
+let validationBlocked = true;
+let runtimeBlocked = false;
+let runtimeDocumentCount = 0;
 
 function project() {
   return {
@@ -160,6 +163,24 @@ try {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
+  await page.route(/cdn\.tailwindcss\.com/, (route) =>
+    route.abort("timedout"),
+  );
+  await page.route(/https:\/\/.*sandpack\.codesandbox\.io\/.*/, (route) => {
+    if (
+      runtimeBlocked &&
+      route.request().resourceType() === "document" &&
+      ++runtimeDocumentCount >= 2
+    ) {
+      return route.fulfill({
+        status: 200,
+        contentType: "text/html; charset=utf-8",
+        body: `<!doctype html><html><body><main><h1>iframe 已渲染，运行协议未就绪</h1></main></body></html>`,
+      });
+    }
+    return route.continue();
+  });
+
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -193,6 +214,9 @@ try {
       path ===
       `/api/projects/${projectId}/versions/${versionOne}/files`
     ) {
+      if (validationBlocked) {
+        await new Promise((resolve) => setTimeout(resolve, 11_000));
+      }
       return json(maps[versionOne]);
     }
     if (
@@ -227,10 +251,33 @@ try {
   await page.goto(`${baseURL}/project/${projectId}`);
   await page.getByRole("heading", { name: "从想法到可运行" }).waitFor();
   await page.getByRole("heading", { name: "可交互预览" }).waitFor();
-  const previewFrame = page.frameLocator('iframe[title="Sandpack Preview"]');
-  await previewFrame.getByText("每日习惯追踪器").waitFor({ timeout: 20_000 });
+  await page
+    .locator('section[data-preview-error-kind="validation_timeout"]')
+    .waitFor({ timeout: 12_000 });
+  await page
+    .getByText("稳定版本校验 10 秒内没有完成，请重试。")
+    .waitFor();
+  assert.equal(
+    await page.locator('iframe[title="Sandpack Preview"]').count(),
+    0,
+  );
 
-  const iframe = page.locator('iframe[title="Sandpack Preview"]');
+  validationBlocked = false;
+  await page.getByRole("button", { name: "仅重试预览" }).click();
+  const previewFrame = page
+    .locator('iframe[title="Sandpack Preview"]')
+    .first()
+    .contentFrame();
+  await previewFrame.getByText("每日习惯追踪器").waitFor({ timeout: 20_000 });
+  await page
+    .locator('section[data-preview-state="ready"]')
+    .waitFor({ timeout: 20_000 });
+  assert.equal(
+    await page.getByText("正在启动稳定预览…").isVisible().catch(() => false),
+    false,
+  );
+
+  const iframe = page.locator('iframe[title="Sandpack Preview"]').first();
   const sandbox = await iframe.getAttribute("sandbox");
   assert.ok(sandbox?.includes("allow-scripts"));
   assert.ok(!sandbox?.includes("allow-top-navigation"));
@@ -257,6 +304,24 @@ try {
   assert.equal(canReadTop, false);
 
   await page.getByRole("button", { name: "文件" }).click();
+  await page.getByRole("button", { name: "版本" }).click();
+  await page.getByText("当前稳定", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "预览" }).click();
+  await page
+    .locator('iframe[title="Sandpack Preview"]')
+    .first()
+    .contentFrame()
+    .getByText("每日习惯追踪器")
+    .waitFor({ timeout: 20_000 });
+  await page
+    .locator('section[data-preview-state="ready"]')
+    .waitFor({ timeout: 20_000 });
+  assert.equal(
+    await page.getByText("正在启动稳定预览…").isVisible().catch(() => false),
+    false,
+  );
+
+  await page.getByRole("button", { name: "文件" }).click();
   const editor = page.getByLabel("/src/App.tsx 代码编辑器");
   await editor.waitFor();
   await editor.fill(secondApp);
@@ -264,14 +329,51 @@ try {
   await page.getByRole("button", { name: "保存并编译" }).click();
   await page.getByText("已同步", { exact: true }).waitFor();
 
+  runtimeBlocked = true;
+  runtimeDocumentCount = 0;
   await page.getByRole("button", { name: "预览" }).click();
-  await previewFrame.getByText("习惯追踪器 · 海蓝").waitFor({
+  await page
+    .locator('section[data-preview-error-kind="resource_timeout"]')
+    .waitFor({ timeout: 20_000 });
+  await page
+    .getByText("预览资源 10 秒内没有就绪，请检查网络后重试。", {
+      exact: false,
+    })
+    .waitFor();
+  await page
+    .locator('iframe[title="Sandpack Preview"]')
+    .first()
+    .contentFrame()
+    .getByText("每日习惯追踪器")
+    .waitFor();
+  await page.getByRole("heading", { name: "从想法到可运行" }).waitFor();
+  assert.equal(
+    await page.locator('iframe[title="Sandpack Preview"]').count(),
+    1,
+  );
+
+  runtimeBlocked = false;
+  await page.getByRole("button", { name: "仅重试预览" }).click();
+  const updatedPreviewFrame = page
+    .locator('iframe[title="Sandpack Preview"]')
+    .last()
+    .contentFrame();
+  await updatedPreviewFrame.getByText("习惯追踪器 · 海蓝").waitFor({
     timeout: 20_000,
   });
+  await page
+    .locator('section[data-preview-state="ready"]')
+    .waitFor({ timeout: 20_000 });
   await page.getByText("v/22222222").waitFor();
-  await previewFrame.getByRole("button", { name: "新增习惯" }).click();
-  await previewFrame.getByText("新习惯").waitFor();
-  await previewFrame.getByRole("button", { name: "删除" }).first().click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('iframe[title="Sandpack Preview"]').length === 1,
+  );
+  await updatedPreviewFrame.getByRole("button", { name: "新增习惯" }).click();
+  await updatedPreviewFrame.getByText("新习惯").waitFor();
+  await updatedPreviewFrame
+    .getByRole("button", { name: "删除" })
+    .first()
+    .click();
 
   await page.getByRole("button", { name: "版本" }).click();
   await page.getByText("当前稳定", { exact: true }).waitFor();
@@ -304,16 +406,29 @@ try {
   const relevantErrors = consoleErrors.filter(
     (message) =>
       !message.includes("cdn.tailwindcss.com") &&
+      message !== "Failed to load resource: net::ERR_TIMED_OUT" &&
       !message.includes("Download the React DevTools"),
   );
   assert.deepEqual(relevantErrors, []);
   console.log(
-    "workspace e2e passed: stable preview, sandbox, manual iteration, edit lock, versions, 375px",
+    "workspace e2e passed: validation timeout, initial load, tab roundtrip, rendered iframe with CDN timeout, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, versions, 375px",
   );
 } catch (error) {
   console.error(serverOutput);
   if (page) {
     console.error(await page.locator("body").innerText().catch(() => ""));
+    console.error(
+      "preview state:",
+      await page
+        .locator("section[data-preview-state]")
+        .evaluate((node) => ({
+          state: node.getAttribute("data-preview-state"),
+          errorKind: node.getAttribute("data-preview-error-kind"),
+        }))
+        .catch(() => null),
+      "runtime documents:",
+      runtimeDocumentCount,
+    );
     console.error("browser console errors:", consoleErrors);
     console.error(
       "preview iframe:",
@@ -330,8 +445,13 @@ try {
       page.frames().map((frame) => frame.url()),
     );
     console.error(
-      "preview body:",
-      await page.frames()[1]?.locator("body").innerText().catch(() => ""),
+      "preview bodies:",
+      await Promise.all(
+        page
+          .frames()
+          .slice(1)
+          .map((frame) => frame.locator("body").innerText().catch(() => "")),
+      ),
     );
     await mkdir("test-results", { recursive: true });
     await page

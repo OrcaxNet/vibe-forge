@@ -4,7 +4,9 @@ import {
   createVerifiedPreview,
   isFileEditLocked,
   normalizeFileTree,
+  PreviewDeadlineError,
   shouldStagePreview,
+  withPreviewDeadline,
   type PreviewSnapshot,
   type VersionView,
 } from "./workspace";
@@ -70,6 +72,27 @@ describe("workspace version integrity", () => {
       false,
     );
     expect(shouldStagePreview("version-1", undefined, "version-2")).toBe(true);
+  });
+
+  it("separates validation deadlines from runtime resource deadlines", async () => {
+    await expect(
+      withPreviewDeadline(
+        new Promise<never>(() => undefined),
+        "validation_timeout",
+        "validation timed out",
+        1,
+      ),
+    ).rejects.toMatchObject({
+      name: "PreviewDeadlineError",
+      kind: "validation_timeout",
+      message: "validation timed out",
+    });
+
+    const resourceTimeout = new PreviewDeadlineError(
+      "resource_timeout",
+      "resource timed out",
+    );
+    expect(resourceTimeout.kind).toBe("resource_timeout");
   });
 });
 
