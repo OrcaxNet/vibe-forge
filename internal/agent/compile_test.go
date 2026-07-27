@@ -73,6 +73,21 @@ export default function App() {
     </div>
   );
 }`,
+		// CJK / non-ASCII JSX text before a tag, a tag right after a JSX
+		// expression container close '}', and a tag after '.' JSX text. These
+		// are the real FLO-58 failure shapes: the opening tag was skipped, so
+		// its closer looked "unexpected"/"mismatched".
+		`import { useState } from "react";
+export default function App() {
+  const [n] = useState(0);
+  return (
+    <div>
+      <label>备注 <span className="muted">（可选）</span></label>
+      <p>当前进度：{n}%<span className="unit">完成</span></p>
+      <p>第 {n} 项.<span className="tail">尾</span></p>
+    </div>
+  );
+}`,
 	}
 	for i, src := range cases {
 		r := ValidateCompile(src)

@@ -263,11 +263,16 @@ func jsxPosition(s string, i int) bool {
 		return true // start of input: `<Foo/>` at top is JSX
 	}
 	c := s[k]
+	// Operand-expecting operators/punctuators, the JSX-expression-container
+	// close '}', and '.' (JSX text like "end.") all put a '<' in JSX position.
+	// '}' closes a `{expr}` container and returns to element context, so
+	// `{expr}<div>` is a JSX tag, not a generic. Only ')', ']' and quotes are
+	// unambiguous value/literal positions where '<' is a generic or comparison.
 	switch c {
 	case '=', '>', '+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '?', ':',
-		'(', '[', '{', ',', ';', '<':
+		'(', '[', '{', '}', ',', ';', '<', '.':
 		return true
-	case ')', ']', '}', '"', '\'', '`':
+	case ')', ']', '"', '\'', '`':
 		return false
 	}
 	if c >= '0' && c <= '9' {
@@ -286,7 +291,11 @@ func jsxPosition(s string, i int) bool {
 		}
 		return false // identifier/value/type reference => generic or comparison
 	}
-	return false
+	// Any other byte (notably CJK/emoji JSX-text continuation bytes 0x80-0xBF:
+	// "备注 <span>", "价格：<b>") means we are inside JSX text content, so a
+	// following '<' is a JSX tag. Treating it as non-JSX skips the opening tag
+	// and makes its legitimate closer look "unexpected"/"mismatched".
+	return true
 }
 
 // isStringStartPos reports whether the quote at index i is in an operand
