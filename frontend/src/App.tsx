@@ -1,7 +1,9 @@
 import {
   FormEvent,
   KeyboardEvent,
+  lazy,
   ReactNode,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -19,6 +21,15 @@ import {
   type Stage,
   type StageNodeStatus,
 } from "./contract";
+import type { WorkspaceDetailTab } from "./WorkspacePanel";
+import {
+  normalizeFileTree,
+  normalizeFilesMap,
+  normalizeVersions,
+  type ManualIteration,
+} from "./workspace";
+
+const WorkspacePanel = lazy(() => import("./WorkspacePanel"));
 
 type JsonObject = Record<string, unknown>;
 
@@ -75,7 +86,7 @@ type ConnectionState =
   | "connected"
   | "reconnecting"
   | "stale";
-type WorkspaceTab = "build" | "preview" | "files";
+type WorkspaceTab = "build" | WorkspaceDetailTab;
 
 type Route = { kind: "home" } | { kind: "project"; projectId: string };
 
@@ -312,8 +323,13 @@ function normalizeProjectDetail(value: unknown): ProjectDetail {
   const runs = asArray(root.runs)
     .map(normalizeRun)
     .filter((run): run is RunView => Boolean(run));
-  const activeRun = normalizeRun(root.activeRun);
-  const latestRun = normalizeRun(root.latestRun) ?? runs[0];
+  const activeRun =
+    normalizeRun(root.activeRun) ??
+    [...runs]
+      .reverse()
+      .find((run) => run.status === "queued" || run.status === "running");
+  const latestRun =
+    normalizeRun(root.latestRun) ?? runs[runs.length - 1];
   return { ...base, messages, activeRun, latestRun };
 }
 
@@ -346,7 +362,11 @@ const api = {
     return normalizeProjectDetail(await requestJson<unknown>(path));
   },
 
-  async createRun(projectId: string, prompt: string): Promise<RunCreated> {
+  async createRun(
+    projectId: string,
+    prompt: string,
+    baseVersionId?: string,
+  ): Promise<RunCreated> {
     const key = createIdempotencyKey("run");
     const path = fillPath(PATHS.createRun.path, { id: projectId });
     const body = await requestJson<unknown>(path, {
@@ -355,7 +375,7 @@ const api = {
         "Content-Type": "application/json",
         [IDEMPOTENCY_HEADER]: key,
       },
-      body: JSON.stringify({ prompt, idempotencyKey: key }),
+      body: JSON.stringify({ prompt, baseVersionId, idempotencyKey: key }),
     });
     if (!isObject(body) || typeof body.runId !== "string") {
       throw new ApiClientError(500, {
@@ -382,6 +402,76 @@ const api = {
       body: JSON.stringify({ attemptId, idempotencyKey: key }),
     });
     return isObject(body) ? stringValue(body.attemptId, attemptId) : attemptId;
+  },
+
+  async listFiles(projectId: string) {
+    const path = fillPath(PATHS.listFiles.path, { id: projectId });
+    return normalizeFileTree(await requestJson<unknown>(path));
+  },
+
+  async listVersions(projectId: string) {
+    const path = fillPath(PATHS.listVersions.path, { id: projectId });
+    return normalizeVersions(await requestJson<unknown>(path));
+  },
+
+  async versionFiles(projectId: string, versionId: string) {
+    const path = fillPath(PATHS.versionFiles.path, {
+      id: projectId,
+      versionId,
+    });
+    return normalizeFilesMap(await requestJson<unknown>(path));
+  },
+
+  async writeApp(
+    projectId: string,
+    content: string,
+    baseVersionId: string,
+  ): Promise<ManualIteration> {
+    const key = createIdempotencyKey("manual");
+    const path = fillPath(PATHS.writeFile.path, { id: projectId });
+    const body = await requestJson<unknown>(path, {
+      method: PATHS.writeFile.method,
+      headers: {
+        "Content-Type": "application/json",
+        [IDEMPOTENCY_HEADER]: key,
+      },
+      body: JSON.stringify({
+        content,
+        baseVersionId,
+        idempotencyKey: key,
+      }),
+    });
+    const raw = isObject(body) ? body : {};
+    return {
+      id: stringValue(raw.id),
+      baseVersionId: stringValue(raw.baseVersionId) || undefined,
+      resultVersionId: stringValue(raw.resultVersionId) || undefined,
+    };
+  },
+
+  async restoreVersion(
+    projectId: string,
+    versionId: string,
+  ): Promise<ManualIteration> {
+    const key = createIdempotencyKey("restore");
+    const path = fillPath(PATHS.restoreVersion.path, {
+      id: projectId,
+      versionId,
+    });
+    const body = await requestJson<unknown>(path, {
+      method: PATHS.restoreVersion.method,
+      headers: {
+        "Content-Type": "application/json",
+        [IDEMPOTENCY_HEADER]: key,
+      },
+      body: JSON.stringify({ idempotencyKey: key }),
+    });
+    const raw = isObject(body) ? body : {};
+    return {
+      id: stringValue(raw.id),
+      baseVersionId: stringValue(raw.baseVersionId) || undefined,
+      resultVersionId: stringValue(raw.resultVersionId) || undefined,
+    };
   },
 };
 
@@ -1112,102 +1202,6 @@ function StageStatus({ status }: { status: StageNodeStatus }) {
   );
 }
 
-function WorkspacePanel({
-  tab,
-  project,
-}: {
-  tab: Exclude<WorkspaceTab, "build">;
-  project: ProjectDetail | null;
-}) {
-  if (tab === "files") {
-    return (
-      <section aria-labelledby="files-title" className="h-full">
-        <div className="border-b border-[#e1e6ed] px-5 py-4">
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#7a8697]">
-            Workspace
-          </p>
-          <h2
-            id="files-title"
-            className="mt-1 text-lg font-black text-[#17243b]"
-          >
-            项目文件
-          </h2>
-        </div>
-        <div className="p-5">
-          <div className="overflow-hidden rounded-2xl border border-[#dce2ea] bg-[#fbfcfe]">
-            {[
-              { path: "/src/App.tsx", writable: true },
-              { path: "/src/main.tsx", writable: false },
-              { path: "/src/index.css", writable: false },
-              { path: "/index.html", writable: false },
-            ].map((file) => (
-              <div
-                key={file.path}
-                className="flex items-center justify-between gap-3 border-b border-[#e5e9ef] px-4 py-3 last:border-0"
-              >
-                <span className="flex min-w-0 items-center gap-3 text-sm font-semibold text-[#35435a]">
-                  <AppIcon
-                    name="file"
-                    className="h-4 w-4 shrink-0 text-[#748299]"
-                  />
-                  <code className="truncate">{file.path}</code>
-                </span>
-                <span
-                  className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ${file.writable ? "bg-[#e8f0ff] text-[#1756d8]" : "bg-[#eef1f5] text-[#7a8697]"}`}
-                >
-                  {file.writable ? "可编辑" : "只读"}
-                </span>
-              </div>
-            ))}
-          </div>
-          <p className="mt-4 text-xs leading-5 text-[#728096]">
-            文件内容与版本切换将在稳定版本生成后开放。脚手架保持只读。
-          </p>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section
-      aria-labelledby="preview-title"
-      className="flex h-full min-h-[440px] flex-col"
-    >
-      <div className="flex items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
-        <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#7a8697]">
-            Stable preview
-          </p>
-          <h2
-            id="preview-title"
-            className="mt-1 text-lg font-black text-[#17243b]"
-          >
-            预览
-          </h2>
-        </div>
-        <span className="rounded-full bg-[#eef1f5] px-2.5 py-1 text-[11px] font-bold text-[#69768a]">
-          {project?.stableVersionId ? "稳定版本" : "等待版本"}
-        </span>
-      </div>
-      <div className="grid flex-1 place-items-center p-6">
-        <div className="max-w-sm text-center">
-          <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-[#ccd9f5] bg-[#edf3ff] text-[#1756d8]">
-            <AppIcon name="spark" className="h-6 w-6" />
-          </span>
-          <h3 className="mt-5 text-lg font-black text-[#17243b]">
-            {project?.stableVersionId ? "稳定预览已准备" : "作品正在成形"}
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-[#68768b]">
-            {project?.stableVersionId
-              ? "预览将在 Sandpack 工作台接入后显示；当前版本标识已由服务端保存。"
-              : "只有服务端发出 preview_ready 后才会切换预览。构建失败时，上一个稳定版本会继续保留。"}
-          </p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function ProjectWorkspace({
   projectId,
   bootstrap,
@@ -1261,6 +1255,7 @@ function ProjectWorkspace({
       ? [{ id: "bootstrap-prompt", role: "user", content: bootstrap.prompt }]
       : [],
   );
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
 
   const applyProject = useCallback((detail: ProjectDetail) => {
     setProject(detail);
@@ -1386,12 +1381,19 @@ function ProjectWorkspace({
         return;
       }
 
+      if (eventName === "file_written") {
+        setWorkspaceRevision((revision) => revision + 1);
+        return;
+      }
+
       if (eventName === "preview_ready") {
         const versionId = stringValue(payload.versionId);
-        if (versionId)
+        if (versionId) {
           setProject((current) =>
             current ? { ...current, stableVersionId: versionId } : current,
           );
+          setWorkspaceRevision((revision) => revision + 1);
+        }
         return;
       }
 
@@ -1440,6 +1442,7 @@ function ProjectWorkspace({
           setProject((current) =>
             current ? { ...current, stableVersionId: versionId } : current,
           );
+        setWorkspaceRevision((revision) => revision + 1);
       }
     },
     [activeAttemptId, runId],
@@ -1468,7 +1471,11 @@ function ProjectWorkspace({
     setComposerError(null);
     try {
       const cleanPrompt = prompt.trim();
-      const created = await api.createRun(projectId, cleanPrompt);
+      const created = await api.createRun(
+        projectId,
+        cleanPrompt,
+        project?.stableVersionId,
+      );
       setRunId(created.runId);
       setActiveAttemptId(created.attemptId);
       setRunStatus("running");
@@ -1601,9 +1608,9 @@ function ProjectWorkspace({
 
       <nav
         aria-label="工作台区域"
-        className="sticky top-16 z-30 grid grid-cols-3 border-b border-[#dce2ea] bg-white px-2 md:hidden"
+        className="sticky top-16 z-30 grid grid-cols-4 border-b border-[#dce2ea] bg-white px-2 md:hidden"
       >
-        {(["build", "preview", "files"] as const).map((item) => (
+        {(["build", "preview", "files", "versions"] as const).map((item) => (
           <button
             key={item}
             type="button"
@@ -1615,7 +1622,13 @@ function ProjectWorkspace({
                 : "border-transparent text-[#6b788b]"
             }`}
           >
-            {item === "build" ? "构建" : item === "preview" ? "预览" : "文件"}
+            {item === "build"
+              ? "构建"
+              : item === "preview"
+                ? "预览"
+                : item === "files"
+                  ? "文件"
+                  : "版本"}
           </button>
         ))}
       </nav>
@@ -1746,7 +1759,7 @@ function ProjectWorkspace({
             className={`${tab === "build" ? "hidden" : "block"} min-h-[calc(100vh-7rem)] bg-white md:block md:min-h-0 md:overflow-hidden md:rounded-[24px] md:border md:border-[#dce2ea] md:shadow-[0_14px_40px_rgba(34,46,66,.06)]`}
           >
             <div className="hidden border-b border-[#e1e6ed] bg-[#f8f9fb] px-3 pt-3 md:flex">
-              {(["preview", "files"] as const).map((item) => (
+              {(["preview", "files", "versions"] as const).map((item) => (
                 <button
                   key={item}
                   type="button"
@@ -1758,15 +1771,44 @@ function ProjectWorkspace({
                       : "text-[#6b788b]"
                   }`}
                 >
-                  {item === "preview" ? "预览" : "文件"}
+                  {item === "preview"
+                    ? "预览"
+                    : item === "files"
+                      ? "文件"
+                      : "版本"}
                 </button>
               ))}
             </div>
             <div className="h-[calc(100%-3.25rem)]">
-              <WorkspacePanel
-                tab={tab === "build" ? desktopTab : tab}
-                project={project}
-              />
+              <Suspense
+                fallback={
+                  <div
+                    className="grid h-full min-h-[440px] place-items-center text-sm font-bold text-[#69768a]"
+                    aria-live="polite"
+                  >
+                    正在加载工作区…
+                  </div>
+                }
+              >
+                <WorkspacePanel
+                  tab={tab === "build" ? desktopTab : tab}
+                  projectId={projectId}
+                  stableVersionId={project?.stableVersionId}
+                  activeRun={active}
+                  revision={workspaceRevision}
+                  api={api}
+                  onStableVersionChange={(versionId) =>
+                    setProject((current) =>
+                      current?.stableVersionId === versionId
+                        ? current
+                        : current
+                          ? { ...current, stableVersionId: versionId }
+                          : current,
+                    )
+                  }
+                  onRefreshProject={() => void loadProject()}
+                />
+              </Suspense>
             </div>
           </section>
         </div>
