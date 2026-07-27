@@ -158,7 +158,7 @@ func (s *Server) retryRun(w http.ResponseWriter, r *http.Request) {
 	if st == nil {
 		return
 	}
-	if s.modelKey == "" {
+	if !s.modelConfigured() {
 		writeContractError(w, "DEPENDENCY_UNAVAILABLE", "model is not configured")
 		return
 	}

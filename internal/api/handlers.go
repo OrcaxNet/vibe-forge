@@ -73,7 +73,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// PRD-C / Stage 1 contract: run creation is rejected until the model is
 	// configured (the agent loop cannot progress without it).
-	if s.modelKey == "" {
+	if !s.modelConfigured() {
 		writeContractError(w, "DEPENDENCY_UNAVAILABLE", "model is not configured")
 		return
 	}
