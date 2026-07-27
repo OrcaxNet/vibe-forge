@@ -112,6 +112,58 @@ func stableString(n sql.NullString) any {
 	return n.String
 }
 
+// RetryRun starts a fresh attempt for a failed/interrupted run so the agent loop
+// can re-drive it (FLO-60). It is idempotent on the Idempotency-Key. A run that
+// is not failed/interrupted is not retryable (409). On success it creates a new
+// attempt (auto_fix_round 0, status running), sets it active, flips the run to
+// running, and returns 202 {"attemptId": ...}. The caller launches Loop.Run.
+func (s *Store) RetryRun(ctx context.Context, runID, idempotencyKey string) (status int, body []byte, replayed bool, err error) {
+	res, err := s.runIdempotent(ctx, "retryRun", idempotencyKey, func(tx *sql.Tx) (int, []byte, error) {
+		var runStatus string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id = ?`, runID).Scan(&runStatus)
+		if err != nil {
+			if isNoRows(err) {
+				return 0, nil, notFound("run not found")
+			}
+			return 0, nil, fmt.Errorf("get run for retry: %w", err)
+		}
+		if runStatus != "failed" && runStatus != "interrupted" {
+			return 0, nil, conflict("run is not retryable", map[string]any{
+				"status": runStatus, "runId": runID,
+			})
+		}
+		var maxSeq int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(sequence), 0) FROM attempts WHERE run_id = ?`, runID).Scan(&maxSeq); err != nil {
+			return 0, nil, fmt.Errorf("next attempt seq: %w", err)
+		}
+		now := s.nowTS()
+		attemptID := newID()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO attempts(id, run_id, sequence, status, auto_fix_round, created_at)
+			 VALUES(?, ?, ?, 'running', 0, ?)`,
+			attemptID, runID, maxSeq+1, now); err != nil {
+			return 0, nil, fmt.Errorf("insert retry attempt: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE runs SET active_attempt_id = ?, status = 'running', updated_at = ? WHERE id = ?`,
+			attemptID, now, runID); err != nil {
+			return 0, nil, fmt.Errorf("activate retry attempt: %w", err)
+		}
+		out, err := json.Marshal(struct {
+			AttemptID string `json:"attemptId"`
+		}{AttemptID: attemptID})
+		if err != nil {
+			return 0, nil, fmt.Errorf("marshal retry: %w", err)
+		}
+		return 202, out, nil
+	})
+	if err != nil {
+		return 0, nil, false, err
+	}
+	return res.status, res.body, res.replayed, nil
+}
+
 // nullStr converts a *string to a sql.NullString (NULL when nil).
 func nullStr(p *string) sql.NullString {
 	if p == nil {

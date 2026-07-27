@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OrcaxNet/vibe-forge/contracts"
+	"github.com/OrcaxNet/vibe-forge/internal/agent"
 	"github.com/OrcaxNet/vibe-forge/internal/db"
 	"github.com/OrcaxNet/vibe-forge/internal/store"
 )
@@ -27,6 +28,14 @@ const Version = "0.2.0"
 // against (sourced from the embedded contract.json).
 func ContractVersion() string { return contracts.Version() }
 
+// LoopRunner runs the agent loop for one run in the background. The SSE stream
+// and run status are the observable surface; Run must be non-blocking (it is
+// launched as a goroutine) and must reach a terminal run state. Decoupled from
+// the concrete *agent.Loop so tests can inject a fake without hitting the API.
+type LoopRunner interface {
+	Run(ctx context.Context, runID string)
+}
+
 // Server holds runtime dependencies. A nil store means SQLite is not configured;
 // mutating endpoints then return 503 DEPENDENCY_UNAVAILABLE.
 type Server struct {
@@ -36,6 +45,9 @@ type Server struct {
 	modelKey  string
 	modelName string
 	now       func() time.Time
+	loop      LoopRunner // nil until InitLoop; createRun/retry launch it if set
+	loopCtx   context.Context
+	loopStop  context.CancelFunc
 }
 
 // New prepares the server. If DATABASE_PATH is set it opens and migrates SQLite
@@ -48,6 +60,11 @@ func New(ctx context.Context) (*Server, error) {
 		modelName: os.Getenv("ANTHROPIC_MODEL"),
 		now:       func() time.Time { return time.Now().UTC() },
 	}
+	// The loop context outlives any single HTTP request (the agent run continues
+	// after the 202 is returned) but is cancelled on Close/shutdown.
+	loopCtx, loopStop := context.WithCancel(ctx)
+	s.loopCtx = loopCtx
+	s.loopStop = loopStop
 	if s.dbPath != "" {
 		d, err := db.Open(s.dbPath)
 		if err != nil {
@@ -63,8 +80,44 @@ func New(ctx context.Context) (*Server, error) {
 	return s, nil
 }
 
-// Close releases resources.
+// InitLoop constructs and installs the real agent loop (FLO-60) when the store
+// and model key are configured. Called by main after New. If the model is not
+// configured, run creation stays rejected and no loop is wired (the rest of the
+// API still serves). Returns an error only if the store is configured but the
+// loop cannot be built.
+func (s *Server) InitLoop() error {
+	if s.store == nil || s.modelKey == "" {
+		return nil
+	}
+	loop, err := agent.NewLoop(s.store, agent.LoopConfig{
+		APIKey: s.modelKey,
+		Model:  s.modelName,
+	})
+	if err != nil {
+		return err
+	}
+	s.loop = loop
+	return nil
+}
+
+// SetLoop installs a custom LoopRunner (used by tests to inject a fake).
+func (s *Server) SetLoop(r LoopRunner) { s.loop = r }
+
+// ReconcileInterruptedRuns flips any queued/running run to 'interrupted' so a
+// crash never leaves a run stuck "active" (C-FR-06/07). Called on startup.
+func (s *Server) ReconcileInterruptedRuns(ctx context.Context) (int, error) {
+	if s.store == nil {
+		return 0, nil
+	}
+	return s.store.MarkActiveRunsInterrupted(ctx)
+}
+
+// Close releases resources. It cancels the loop context so in-flight agent runs
+// stop (they are reconciled as 'interrupted' on the next startup).
 func (s *Server) Close() error {
+	if s.loopStop != nil {
+		s.loopStop()
+	}
 	if s.db != nil {
 		return s.db.Close()
 	}
@@ -83,19 +136,15 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/runs", s.createRun)
 	mux.HandleFunc("GET /api/projects/{id}/files", s.listFiles)
 	mux.HandleFunc("PUT /api/projects/{id}/files/src/App.tsx", s.writeFile)
+	mux.HandleFunc("PUT /api/projects/{id}/files/{path...}", s.writeFileIllegalPath)
 	mux.HandleFunc("GET /api/projects/{id}/versions", s.listVersions)
 	mux.HandleFunc("GET /api/projects/{id}/versions/{versionId}/files", s.versionFiles)
 	mux.HandleFunc("POST /api/projects/{id}/versions/{versionId}/restore", s.restoreVersion)
 
-	// Agent-loop endpoints (FLO-60): stubbed.
-	stub := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, "NOT_IMPLEMENTED", name+" is not implemented until FLO-60 (agent loop)", false, http.StatusNotImplemented)
-		}
-	}
-	mux.HandleFunc("GET /api/runs/{id}/events", stub("runEvents"))
-	mux.HandleFunc("POST /api/runs/{id}/retry", stub("retryRun"))
-	mux.HandleFunc("POST /api/runs/{id}/compile-result", stub("compileResult"))
+	// Agent-loop endpoints (FLO-60).
+	mux.HandleFunc("GET /api/runs/{id}/events", s.runEvents)
+	mux.HandleFunc("POST /api/runs/{id}/retry", s.retryRun)
+	mux.HandleFunc("POST /api/runs/{id}/compile-result", s.compileResult)
 	return mux
 }
 

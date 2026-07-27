@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/OrcaxNet/vibe-forge/internal/store"
@@ -89,12 +90,32 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if !requireKey(w, key) {
 		return
 	}
-	status, body, _, err := st.CreateRun(r.Context(), r.PathValue("id"), req.Prompt, req.BaseVersionID, key)
+	status, body, replayed, err := st.CreateRun(r.Context(), r.PathValue("id"), req.Prompt, req.BaseVersionID, key)
 	if err != nil {
 		s.writeStoreErr(w, err)
 		return
 	}
+	// Launch the agent loop for the new run. Only on a genuine create (not an
+	// idempotent replay) and only when the loop is wired (model configured). The
+	// loop runs on the server-lifetime loopCtx, decoupled from this request.
+	if !replayed && s.loop != nil {
+		var created struct {
+			RunID string `json:"runId"`
+		}
+		if json.Unmarshal(body, &created) == nil && created.RunID != "" {
+			go s.loop.Run(s.loopCtx, created.RunID)
+		}
+	}
 	writeRaw(w, status, body)
+}
+
+// writeFileIllegalPath: PUT /api/projects/{id}/files/{path...} for any path other
+// than /src/App.tsx. Only /src/App.tsx is writable (contract
+// §limits.writableFilePath, B-FR-01); every other path returns 422
+// VALIDATION_ERROR (acceptance 3: illegal file path returns 422).
+func (s *Server) writeFileIllegalPath(w http.ResponseWriter, r *http.Request) {
+	writeContractError(w, "VALIDATION_ERROR",
+		"only /src/App.tsx is writable; path "+r.PathValue("path")+" is read-only or invalid")
 }
 
 // listFiles: GET /api/projects/{id}/files
