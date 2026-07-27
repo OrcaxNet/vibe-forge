@@ -1,22 +1,22 @@
--- 0001_init.sql — Vibe Forge initial schema skeleton.
--- Mirrors the entity shapes in contracts/contract.json (§5 models) and the
--- PRD-C data model. This is a foundation for Stage 2 (FLO-55), which owns the
--- final transaction boundaries, indexes and tests.
+-- 0001_init.sql - Vibe Forge schema (Stage 2 / FLO-55 final).
 --
--- Statements are idempotent (IF NOT EXISTS) so the runner is safe to re-apply.
-
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version     TEXT PRIMARY KEY,
-    applied_at  TEXT NOT NULL
-);
+-- Single source of truth for the data model. Mirrors the entity shapes in
+-- contracts/contract.json (§models) and PRD-C. This is the finalized schema the
+-- migration runner applies on startup; PRD-C requires migration failure to stop
+-- startup (no silent skip) and re-running the runner to be idempotent.
+--
+-- All statements are IF NOT EXISTS so a statement-level re-run is safe; the
+-- runner additionally records each version in schema_migrations so a version is
+-- applied at most once per database.
+--
+-- PRAGMAs (journal_mode=WAL, foreign_keys=ON) are set in the DSN by db.Open, not
+-- here: they cannot be changed from inside the transaction the runner wraps each
+-- migration in.
 
 CREATE TABLE IF NOT EXISTS projects (
     id                TEXT PRIMARY KEY,
     title             TEXT NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'draft'
+    status            TEXT NOT NULL DEFAULT 'active'
                           CHECK (status IN ('draft', 'active', 'archived')),
     stable_version_id TEXT,
     created_at        TEXT NOT NULL,
@@ -47,13 +47,13 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
-    id            TEXT PRIMARY KEY,
-    run_id        TEXT NOT NULL,
-    sequence      INTEGER NOT NULL,
-    status        TEXT NOT NULL DEFAULT 'queued'
-                      CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'interrupted')),
-    auto_fix_round INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL,
+    id             TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL,
+    sequence        INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'queued'
+                         CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'interrupted')),
+    auto_fix_round  INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 );
 
@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS iterations (
     prompt            TEXT,
     created_at        TEXT NOT NULL,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE SET NULL
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (result_version_id) REFERENCES versions(id)
 );
 
 CREATE TABLE IF NOT EXISTS versions (
@@ -113,18 +114,31 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_runs_project        ON runs(project_id);
-CREATE INDEX IF NOT EXISTS idx_runs_status         ON runs(status);
-CREATE INDEX IF NOT EXISTS idx_events_run_seq      ON events(run_id, seq);
-CREATE INDEX IF NOT EXISTS idx_versions_project    ON versions(project_id);
-CREATE INDEX IF NOT EXISTS idx_versions_status     ON versions(status);
-CREATE INDEX IF NOT EXISTS idx_iterations_project  ON iterations(project_id);
-
--- Idempotency-key ledger (see contract §idempotency). FLO-55 owns the GC/TTL.
+-- Idempotency-key ledger (contract §idempotency). Stores the original 2xx
+-- response so a repeated Idempotency-Key within ttlSeconds replays the exact
+-- result with no duplicate side effects. GC'd by created_at (db.GCIdempotency).
 CREATE TABLE IF NOT EXISTS idempotency_records (
-    key            TEXT NOT NULL,
-    endpoint       TEXT NOT NULL,
-    response_hash  TEXT,
-    created_at     TEXT NOT NULL,
+    key           TEXT NOT NULL,
+    endpoint      TEXT NOT NULL,
+    status_code   INTEGER NOT NULL,
+    response_body TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
     PRIMARY KEY (key, endpoint)
 );
+
+-- Single active run per project (contract §concurrency.singleActiveRun). At most
+-- one row per project may hold a queued/running status; a second insert fails
+-- with a UNIQUE violation which the store maps to 409 CONFLICT.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_one_active
+    ON runs(project_id) WHERE status IN ('queued', 'running');
+
+CREATE INDEX IF NOT EXISTS idx_runs_project       ON runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_runs_status        ON runs(status);
+CREATE INDEX IF NOT EXISTS idx_events_run_seq     ON events(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_versions_project   ON versions(project_id);
+CREATE INDEX IF NOT EXISTS idx_versions_status    ON versions(status);
+CREATE INDEX IF NOT EXISTS idx_iterations_project ON iterations(project_id);
+CREATE INDEX IF NOT EXISTS idx_messages_project   ON messages(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_files_version      ON files(version_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_version_path ON files(version_id, path);
+CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_records(created_at);

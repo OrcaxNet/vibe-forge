@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -8,9 +9,46 @@ import (
 	"testing"
 )
 
+// newAPITestServer returns a server backed by an in-memory SQLite DB and a
+// configured model key.
+func newAPITestServer(t *testing.T) *Server {
+	t.Helper()
+	t.Setenv("DATABASE_PATH", ":memory:")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+	srv, err := New(context.Background())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	return srv
+}
+
+// doJSON issues a request with an optional Idempotency-Key header and JSON body.
+func doJSON(t *testing.T, srv *Server, method, path, key string, body any) (int, []byte) {
+	t.Helper()
+	var req *http.Request
+	if body == nil {
+		req = httptest.NewRequest(method, path, nil)
+	} else {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = httptest.NewRequest(method, path, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec.Code, rec.Body.Bytes()
+}
+
 // TestHealthNotReadyStructurallyCorrect is the backend smoke: with no
 // DATABASE_PATH and no ANTHROPIC_API_KEY, GET /api/health returns 503 with a
-// structurally correct, sanitized body (acceptance criterion 3).
+// structurally correct, sanitized body (Stage 1 acceptance criterion 3).
 func TestHealthNotReadyStructurallyCorrect(t *testing.T) {
 	srv, err := New(context.Background())
 	if err != nil {
@@ -41,28 +79,18 @@ func TestHealthNotReadyStructurallyCorrect(t *testing.T) {
 	if h.Dependencies.Model.Status != "not_configured" {
 		t.Errorf("model status = %q, want not_configured", h.Dependencies.Model.Status)
 	}
-	// Sanitized: no raw env paths/keys leak into the body.
 	body := rec.Body.String()
 	for _, secret := range []string{"ANTHROPIC_API_KEY", "sk-", "gho_", "DATABASE_PATH"} {
-		if contains(body, secret) {
+		if bytes.Contains(rec.Body.Bytes(), []byte(secret)) {
 			t.Errorf("health body leaks %q: %s", secret, body)
 		}
 	}
 }
 
 // TestHealthReadyWithDeps proves the structure flips to 200 healthy once the
-// dependencies are configured, so the "not ready" state is configuration-driven
-// rather than hardcoded.
+// dependencies are configured.
 func TestHealthReadyWithDeps(t *testing.T) {
-	t.Setenv("DATABASE_PATH", ":memory:")
-	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	t.Setenv("ANTHROPIC_MODEL", "claude-sonnet-5")
-	srv, err := New(context.Background())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer srv.Close()
-
+	srv := newAPITestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
@@ -76,12 +104,11 @@ func TestHealthReadyWithDeps(t *testing.T) {
 	}
 }
 
-// TestStubReturnsStableError verifies a contract path stub responds with the
-// stable error structure (contract §errors.structure).
+// TestStubReturnsStableError verifies a still-stubbed (FLO-60) contract path
+// responds with the stable error structure.
 func TestStubReturnsStableError(t *testing.T) {
-	srv, _ := New(context.Background())
-	defer srv.Close()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects", nil)
+	srv := newAPITestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/runs/some-run/compile-result", nil)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented {
@@ -96,15 +123,133 @@ func TestStubReturnsStableError(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (indexOf(s, sub) >= 0)
+// TestCreateProjectAndList (criterion 2/5): create a project via the API, then
+// list and fetch it back - the server is the source of truth, no browser needed.
+func TestCreateProjectAndList(t *testing.T) {
+	srv := newAPITestServer(t)
+
+	status, body := doJSON(t, srv, "POST", "/api/projects", "key-1",
+		map[string]string{"initialPrompt": "build a habit tracker"})
+	if status != 201 {
+		t.Fatalf("create status = %d, want 201 (body=%s)", status, body)
+	}
+	var p struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Status != "active" || p.Title == "" {
+		t.Errorf("unexpected project: %+v", p)
+	}
+
+	// List returns the project.
+	status, body = doJSON(t, srv, "GET", "/api/projects", "", nil)
+	if status != 200 {
+		t.Fatalf("list status = %d, want 200", status)
+	}
+	var ps []map[string]any
+	json.Unmarshal(body, &ps)
+	if len(ps) != 1 {
+		t.Errorf("expected 1 project, got %d", len(ps))
+	}
+
+	// Detail returns the same project.
+	status, body = doJSON(t, srv, "GET", "/api/projects/"+p.ID, "", nil)
+	if status != 200 {
+		t.Fatalf("detail status = %d, want 200 (body=%s)", status, body)
+	}
 }
 
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
+// TestCreateProjectIdempotentAPI (criterion 2): same Idempotency-Key replays the
+// original 201 without creating a duplicate.
+func TestCreateProjectIdempotentAPI(t *testing.T) {
+	srv := newAPITestServer(t)
+	s1, b1 := doJSON(t, srv, "POST", "/api/projects", "dup-key",
+		map[string]string{"initialPrompt": "build X"})
+	s2, b2 := doJSON(t, srv, "POST", "/api/projects", "dup-key",
+		map[string]string{"initialPrompt": "build X"})
+	if s1 != 201 || s2 != 201 {
+		t.Fatalf("statuses = %d,%d, want 201,201", s1, s2)
 	}
-	return -1
+	if !bytes.Equal(b1, b2) {
+		t.Error("replayed response body differs from original")
+	}
+	_, list := doJSON(t, srv, "GET", "/api/projects", "", nil)
+	var ps []map[string]any
+	json.Unmarshal(list, &ps)
+	if len(ps) != 1 {
+		t.Errorf("expected 1 project after idempotent replay, got %d", len(ps))
+	}
+}
+
+// TestCreateRunConflictAPI (criterion 2): a second active run returns 409.
+func TestCreateRunConflictAPI(t *testing.T) {
+	srv := newAPITestServer(t)
+	_, body := doJSON(t, srv, "POST", "/api/projects", "pk",
+		map[string]string{"initialPrompt": "build an app"})
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(body, &p)
+
+	s1, _ := doJSON(t, srv, "POST", "/api/projects/"+p.ID+"/runs", "rk1",
+		map[string]string{"prompt": "build an app"})
+	if s1 != 202 {
+		t.Fatalf("first run status = %d, want 202", s1)
+	}
+	s2, b2 := doJSON(t, srv, "POST", "/api/projects/"+p.ID+"/runs", "rk2",
+		map[string]string{"prompt": "build again"})
+	if s2 != 409 {
+		t.Fatalf("second run status = %d, want 409 (body=%s)", s2, b2)
+	}
+	var e APIError
+	json.Unmarshal(b2, &e)
+	if e.Code != "CONFLICT" {
+		t.Errorf("error code = %q, want CONFLICT", e.Code)
+	}
+}
+
+// TestGetProjectNotFoundAPI (C-FR-02): a nonexistent project returns 404 with the
+// stable error shape and does not leak data.
+func TestGetProjectNotFoundAPI(t *testing.T) {
+	srv := newAPITestServer(t)
+	status, body := doJSON(t, srv, "GET", "/api/projects/does-not-exist", "", nil)
+	if status != 404 {
+		t.Fatalf("status = %d, want 404", status)
+	}
+	var e APIError
+	json.Unmarshal(body, &e)
+	if e.Code != "NOT_FOUND" {
+		t.Errorf("code = %q, want NOT_FOUND", e.Code)
+	}
+}
+
+// TestErrorsAreSanitized (C-NFR-03): error bodies never leak the API key, a stack
+// trace or internal paths.
+func TestErrorsAreSanitized(t *testing.T) {
+	srv := newAPITestServer(t)
+	// 404 body must not leak secrets.
+	_, body := doJSON(t, srv, "GET", "/api/projects/nope", "", nil)
+	if bytes.Contains(body, []byte("test-key")) {
+		t.Errorf("404 body leaks API key: %s", body)
+	}
+	// Validation error from missing idempotency key.
+	_, body = doJSON(t, srv, "POST", "/api/projects", "",
+		map[string]string{"initialPrompt": "build X"})
+	if bytes.Contains(body, []byte("test-key")) || bytes.Contains(body, []byte(".go:")) {
+		t.Errorf("error body not sanitized: %s", body)
+	}
+}
+
+// TestMutatingEndpointRequiresKey: omitting the Idempotency-Key is a 422.
+func TestMutatingEndpointRequiresKey(t *testing.T) {
+	srv := newAPITestServer(t)
+	status, _ := doJSON(t, srv, "POST", "/api/projects", "",
+		map[string]string{"initialPrompt": "build X"})
+	if status != 422 {
+		t.Fatalf("status = %d, want 422", status)
+	}
 }
