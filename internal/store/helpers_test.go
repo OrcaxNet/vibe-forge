@@ -54,7 +54,7 @@ func createProject(t *testing.T, s *Store, key, prompt string) Project {
 // createRun is a test helper that creates a run and returns runID + iterationID.
 func createRun(t *testing.T, s *Store, projectID, prompt, baseVersionID, key string) (string, string) {
 	t.Helper()
-	status, body, _, err := s.CreateRun(ctx, projectID, prompt, baseVersionID, key)
+	status, body, _, err := s.CreateRun(ctx, projectID, prompt, baseVersionID, key, true)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}

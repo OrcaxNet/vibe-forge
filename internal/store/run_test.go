@@ -12,7 +12,7 @@ func TestCreateRunIdempotent(t *testing.T) {
 	p := createProject(t, s, "pk", "build an app")
 
 	runID1, _ := createRun(t, s, p.ID, "build an app", "", "rk")
-	_, _, replayed, err := s.CreateRun(ctx, p.ID, "build an app", "", "rk")
+	_, _, replayed, err := s.CreateRun(ctx, p.ID, "build an app", "", "rk", true)
 	if err != nil {
 		t.Fatalf("second CreateRun: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestCreateRunActiveConflict(t *testing.T) {
 	p := createProject(t, s, "pk", "build an app")
 	runID, _ := createRun(t, s, p.ID, "build an app", "", "rk1")
 
-	_, _, _, err := s.CreateRun(ctx, p.ID, "build an app again", "", "rk2")
+	_, _, _, err := s.CreateRun(ctx, p.ID, "build an app again", "", "rk2", true)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict for second active run, got %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCreateRunOptimisticLock(t *testing.T) {
 	createRun(t, s, p.ID, "edit it", v.ID, "rk2")
 
 	// Wrong base -> 409.
-	_, _, _, err := s.CreateRun(ctx, p.ID, "edit it", "bogus-version-id", "rk3")
+	_, _, _, err := s.CreateRun(ctx, p.ID, "edit it", "bogus-version-id", "rk3", true)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected ErrConflict for base mismatch, got %v", err)
 	}
@@ -71,7 +71,7 @@ func TestCreateRunOptimisticLock(t *testing.T) {
 func TestCreateRunValidation(t *testing.T) {
 	s, _ := newTestStore(t)
 	p := createProject(t, s, "pk", "build an app")
-	_, _, _, err := s.CreateRun(ctx, p.ID, "", "", "rk")
+	_, _, _, err := s.CreateRun(ctx, p.ID, "", "", "rk", true)
 	if !errors.Is(err, ErrValidation) {
 		t.Errorf("empty prompt should be VALIDATION_ERROR, got %v", err)
 	}

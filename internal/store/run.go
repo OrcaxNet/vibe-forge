@@ -5,17 +5,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
 
 // CreateRun starts a new generation run for a project. It is idempotent on the
 // Idempotency-Key, enforces single-active-run (409 with activeRunId) and the
 // baseVersionId optimistic lock (409). It creates the run, its first attempt,
-// the agent iteration and the user message for the prompt. Returns the contract
-// response body {"runId": ...} with status 202.
-func (s *Store) CreateRun(ctx context.Context, projectID, prompt, baseVersionID, idempotencyKey string) (status int, body []byte, replayed bool, err error) {
+// the agent iteration and (for edit runs) the user message for the prompt.
+//
+// canStart reports whether the agent loop can run (model configured). When false
+// the run is still created - as 'failed' with a run_failed event - so the failure
+// context and the retry entry survive a refresh; the initial user message is
+// already durable from createProject, so the prompt is never lost (VF-P0-03).
+// Returns the contract response body {"runId": ...} with status 202 when the run
+// is queued, or status 503 (nil body, not cached) when it is recorded as failed.
+func (s *Store) CreateRun(ctx context.Context, projectID, prompt, baseVersionID, idempotencyKey string, canStart bool) (status int, body []byte, replayed bool, err error) {
 	res, err := s.runIdempotent(ctx, "createRun", idempotencyKey, func(tx *sql.Tx) (int, []byte, error) {
 		lim := limits()
+		prompt = strings.TrimSpace(prompt)
 		n := utf8.RuneCountInString(prompt)
 		if n < lim.PromptMinChars || n > lim.PromptMaxChars {
 			return 0, nil, validation("prompt length out of range", map[string]any{
@@ -56,21 +64,36 @@ func (s *Store) CreateRun(ctx context.Context, projectID, prompt, baseVersionID,
 			b := stable.String
 			base = &b
 		}
+		// First run vs edit: the first run reuses createProject's initial user
+		// message; subsequent (edit) runs record their own prompt as a new
+		// message. This keeps exactly one user message per prompt - no duplicate
+		// message on retry (VF-P0-03).
+		var priorRuns int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM runs WHERE project_id = ?`, projectID).Scan(&priorRuns); err != nil {
+			return 0, nil, fmt.Errorf("count prior runs: %w", err)
+		}
+
 		now := s.nowTS()
 		runID := newID()
 		attemptID := newID()
 		iterationID := newID()
 
+		runStatus, attemptStatus := "queued", "queued"
+		if !canStart {
+			runStatus, attemptStatus = "failed", "failed"
+		}
+
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO runs(id, project_id, status, prompt, base_version_id, active_attempt_id, created_at, updated_at)
-			 VALUES(?, ?, 'queued', ?, ?, NULL, ?, ?)`,
-			runID, projectID, prompt, nullStr(base), now, now); err != nil {
+			 VALUES(?, ?, ?, ?, ?, NULL, ?, ?)`,
+			runID, projectID, runStatus, prompt, nullStr(base), now, now); err != nil {
 			return 0, nil, fmt.Errorf("insert run: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO attempts(id, run_id, sequence, status, auto_fix_round, created_at)
-			 VALUES(?, ?, 1, 'queued', 0, ?)`,
-			attemptID, runID, now); err != nil {
+			 VALUES(?, ?, 1, ?, 0, ?)`,
+			attemptID, runID, attemptStatus, now); err != nil {
 			return 0, nil, fmt.Errorf("insert attempt: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -83,12 +106,39 @@ func (s *Store) CreateRun(ctx context.Context, projectID, prompt, baseVersionID,
 			iterationID, projectID, runID, nullStr(base), prompt, now); err != nil {
 			return 0, nil, fmt.Errorf("insert iteration: %w", err)
 		}
-		// User message for this run's prompt (one per run; first or edit).
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO messages(id, project_id, role, content, created_at)
-			 VALUES(?, ?, 'user', ?, ?)`,
-			newID(), projectID, prompt, now); err != nil {
-			return 0, nil, fmt.Errorf("insert run message: %w", err)
+		// Edit runs record their own user message; the first run reuses the
+		// initial message persisted by createProject.
+		if priorRuns > 0 {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO messages(id, project_id, role, content, created_at)
+				 VALUES(?, ?, 'user', ?, ?)`,
+				newID(), projectID, prompt, now); err != nil {
+				return 0, nil, fmt.Errorf("insert edit message: %w", err)
+			}
+		}
+
+		// When the run cannot start (model not configured), persist it as failed
+		// with a run_failed event so the failure context and retry entry survive a
+		// refresh. The 503 is not cached (non-2xx) but the run + event commit, so
+		// retryRun can re-drive the failed run once the model is configured.
+		if !canStart {
+			var seq int
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id = ?`, runID).Scan(&seq); err != nil {
+				return 0, nil, fmt.Errorf("next failure event seq: %w", err)
+			}
+			payload, err := json.Marshal(map[string]any{
+				"runId": runID, "stage": nil, "code": "DEPENDENCY_UNAVAILABLE", "retryable": true,
+			})
+			if err != nil {
+				return 0, nil, fmt.Errorf("marshal failure event: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO events(id, run_id, seq, type, payload, created_at) VALUES(?, ?, ?, 'run_failed', ?, ?)`,
+				newID(), runID, seq, string(payload), now); err != nil {
+				return 0, nil, fmt.Errorf("insert failure event: %w", err)
+			}
+			return 503, nil, nil
 		}
 
 		out, err := json.Marshal(struct {

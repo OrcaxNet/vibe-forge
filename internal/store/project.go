@@ -15,10 +15,16 @@ import (
 // §idempotency). On success it returns the JSON response body and replayed=false
 // (or replayed=true on a cache hit). Application errors (validation) are
 // returned as *Error and are not cached.
+//
+// The initialPrompt is validated after trimming (VF-P0-02: whitespace-only is a
+// 422, never persisted) and is persisted as the initial user message atomically
+// with the project, so the prompt is queryable from getProject before any run
+// starts and survives a later run-startup failure (VF-P0-03).
 func (s *Store) CreateProject(ctx context.Context, title, initialPrompt, idempotencyKey string) (status int, body []byte, replayed bool, err error) {
 	res, err := s.runIdempotent(ctx, "createProject", idempotencyKey, func(tx *sql.Tx) (int, []byte, error) {
 		lim := limits()
-		n := utf8.RuneCountInString(initialPrompt)
+		prompt := strings.TrimSpace(initialPrompt)
+		n := utf8.RuneCountInString(prompt)
 		if n < lim.PromptMinChars || n > lim.PromptMaxChars {
 			return 0, nil, validation("initialPrompt length out of range", map[string]any{
 				"min": lim.PromptMinChars, "max": lim.PromptMaxChars, "actual": n,
@@ -26,7 +32,7 @@ func (s *Store) CreateProject(ctx context.Context, title, initialPrompt, idempot
 		}
 		t := strings.TrimSpace(title)
 		if t == "" {
-			t = deriveTitle(initialPrompt)
+			t = deriveTitle(prompt)
 		}
 		now := s.nowTS()
 		p := Project{
@@ -42,9 +48,16 @@ func (s *Store) CreateProject(ctx context.Context, title, initialPrompt, idempot
 			p.ID, p.Title, p.Status, p.CreatedAt, p.UpdatedAt); err != nil {
 			return 0, nil, fmt.Errorf("insert project: %w", err)
 		}
-		// The seed user message is NOT stored here: createRun owns user messages
-		// (one per run) so first runs and second-edit runs record their prompt
-		// consistently. initialPrompt is used only to derive the title.
+		// Persist the initial user message atomically with the project. This is
+		// the durable home of the prompt: it is queryable before any run starts
+		// and survives a run-startup failure (503/429/config-missing). createRun
+		// reuses this message for the first run instead of duplicating it.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO messages(id, project_id, role, content, created_at)
+			 VALUES(?, ?, 'user', ?, ?)`,
+			newID(), p.ID, prompt, now); err != nil {
+			return 0, nil, fmt.Errorf("insert initial message: %w", err)
+		}
 		out, err := json.Marshal(p)
 		if err != nil {
 			return 0, nil, fmt.Errorf("marshal project: %w", err)

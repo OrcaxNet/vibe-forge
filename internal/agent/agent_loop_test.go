@@ -108,7 +108,7 @@ func setupLoop(t *testing.T, fake streamCall) (*Loop, *store.Store, string, stri
 	}
 	json.Unmarshal(pbody, &p)
 
-	_, rbody, _, err := st.CreateRun(context.Background(), p.ID, "build a habit tracker", "", "rk")
+	_, rbody, _, err := st.CreateRun(context.Background(), p.ID, "build a habit tracker", "", "rk", true)
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
