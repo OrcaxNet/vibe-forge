@@ -7,8 +7,7 @@ in **SQLite**.
 
 [Open the live demo](https://vf.floatflow.com)
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
-· [Inspect the deployed frontend revision](https://github.com/OrcaxNet/vibe-forge/commit/a7ee221db8121fff1007f9bebd26ff0e6c58b51e)
-· [Inspect the deployed backend revision](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c)
+· [Inspect the deployed revision](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6)
 
 > The anonymous demo uses a Cloudflare named tunnel with the fixed
 > `vf.floatflow.com` hostname and runs on a local OrbStack host. The URL remains
@@ -26,14 +25,14 @@ in **SQLite**.
 5. Request a natural-language change without losing the previous stable version.
 6. Refresh or restart the backend and recover the project from SQLite.
 
-The formal 10-prompt release gate ran against
+The historical formal 10-prompt release gate ran against
 `ccb172608ebab7eb05294ad9c178d556fb8a795c` and completed 10/10 fixed prompts
 successfully. Every run produced four ordered stage artifacts, `file_written`,
 `preview_ready`, `run_completed`, and a matching stable version. The longest run
 took 141.9 seconds, so allow roughly 1.5–2.5 minutes for a full generation.
-Frontend-only fixes through
-`a7ee221db8121fff1007f9bebd26ff0e6c58b51e` are deployed on top of that backend
-baseline.
+This SHA is a test baseline, not the current deployment; the frontend and
+backend are now both deployed from
+`27138028076c85f742b76bf2dc60bdd0e32536d6`.
 
 ## Architecture
 
@@ -195,18 +194,20 @@ runtime `npm install` occurs.
 
 ### Deployment traceability
 
-The live stack currently contains intentionally split revisions because the
-latest fixes were frontend-only:
+The live frontend and backend were deployed together from one revision:
 
 | Component | Deployed Git revision |
 | --- | --- |
-| Frontend | [`a7ee221db8121fff1007f9bebd26ff0e6c58b51e`](https://github.com/OrcaxNet/vibe-forge/commit/a7ee221db8121fff1007f9bebd26ff0e6c58b51e) |
-| Backend | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
+| Frontend | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
+| Backend | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
 
-Every frontend image built from this revision exposes `/build-info.json`,
-containing the injected Git revision, a SHA-256 digest over the runtime assets,
-and the individual asset digests. Compose readiness checks the manifest revision
-instead of accepting any responsive nginx process.
+The public [`/build-info.json`](https://vf.floatflow.com/build-info.json) is the
+authoritative frontend artifact check. It contains the injected Git revision, a
+SHA-256 digest over the runtime assets, and the individual asset digests.
+Compose readiness checks the manifest revision instead of accepting any
+responsive nginx process. The backend revision is confirmed by the coordinated
+FLO-68 deployment record and its post-deployment acceptance; `/api/health`
+verifies runtime health but does not itself expose a Git SHA.
 
 Use the release wrapper for a production frontend update:
 
@@ -294,8 +295,8 @@ Explicitly outside the MVP:
 | --- | --- |
 | Public demo | <https://vf.floatflow.com> |
 | Public source | <https://github.com/OrcaxNet/vibe-forge> |
-| Deployed frontend revision | [`a7ee221db8121fff1007f9bebd26ff0e6c58b51e`](https://github.com/OrcaxNet/vibe-forge/commit/a7ee221db8121fff1007f9bebd26ff0e6c58b51e) |
-| Deployed backend revision | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
+| Deployed frontend revision | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
+| Deployed backend revision | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
 | Setup, architecture, smoke, status, and limitations | This README |
 
 The project is released under the [MIT License](./LICENSE). Direct dependency
