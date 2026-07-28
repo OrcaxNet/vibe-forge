@@ -82,11 +82,68 @@ const versions = [
 
 let stableVersionId = versionOne;
 let activeRunMode = false;
+let workflowMode = "completed";
+let projectRequestFails = false;
+let delayNextProject = true;
+let releaseFirstProjectResponse;
+const firstProjectResponseGate = new Promise((resolve) => {
+  releaseFirstProjectResponse = resolve;
+});
 let validationBlocked = true;
 let runtimeBlocked = false;
 let runtimeDocumentCount = 0;
 
 function project() {
+  const completedStages = [
+    {
+      stageKey: "pm",
+      stage: "pm",
+      status: "succeeded",
+      artifactType: "spec",
+      artifactRef: productSpec,
+    },
+    {
+      stageKey: "architect",
+      stage: "architect",
+      status: "succeeded",
+      artifactType: "structure_plan",
+      artifactRef: architecturePlan,
+    },
+    {
+      stageKey: "engineer",
+      stage: "engineer",
+      status: "succeeded",
+      artifactType: "file_ref",
+      artifactRef: `${versionOne}:/src/App.tsx`,
+    },
+    {
+      stageKey: "qa",
+      stage: "qa",
+      status: workflowMode === "recovering" ? "recovering" : "succeeded",
+      artifactType: "compile_result",
+      artifactRef: compileResult,
+    },
+  ];
+  const activeStages = completedStages.map((stage, index) => ({
+    ...stage,
+    status: index === 0 ? "running" : "waiting",
+    artifactRef: undefined,
+    artifactType: undefined,
+  }));
+  const completedRun = {
+    id: "run-complete",
+    status: "succeeded",
+    stages: completedStages,
+    stageArtifacts: completedStages,
+  };
+  const activeRun = {
+    id: "run-active",
+    status: "running",
+    prompt: "把卡片改成圆角",
+    activeAttemptId: "attempt-active",
+    stages: activeStages,
+    stageArtifacts: [],
+  };
   return {
     id: projectId,
     title: "每日习惯追踪器",
@@ -100,45 +157,26 @@ function project() {
         content: "做一个可以新增和删除习惯的追踪器",
       },
     ],
-    latestRun: {
-      id: "run-complete",
-      status: "succeeded",
-      stages: [
-        { stage: "pm", status: "succeeded" },
-        { stage: "architect", status: "succeeded" },
-        { stage: "engineer", status: "succeeded" },
-        { stage: "qa", status: "succeeded" },
-      ],
-      stageArtifacts: [
-        { stage: "pm", artifactType: "spec", artifactRef: productSpec },
-        {
-          stage: "architect",
-          artifactType: "structure_plan",
-          artifactRef: architecturePlan,
-        },
-        {
-          stage: "engineer",
-          artifactType: "file_ref",
-          artifactRef: `${versionOne}:/src/App.tsx`,
-        },
-        {
-          stage: "qa",
-          artifactType: "compile_result",
-          artifactRef: compileResult,
-        },
-      ],
+    workflowStatus: activeRunMode ? "running" : workflowMode,
+    workflowRunId: activeRunMode ? "run-active" : "run-complete",
+    stateVersion: activeRunMode ? 10 : workflowMode === "recovering" ? 11 : 9,
+    stateUpdatedAt: "2026-07-28T00:10:00Z",
+    responseUpdatedAt: new Date().toISOString(),
+    stages: activeRunMode ? activeStages : completedStages,
+    preview: {
+      version: stableVersionId,
+      workflowRunId: "run-complete",
     },
-    runs: activeRunMode
-      ? [
-          {
-            id: "run-active",
-            status: "running",
-            prompt: "把卡片改成圆角",
-            activeAttemptId: "attempt-active",
-            stages: [],
-          },
-        ]
-      : [],
+    consistency:
+      workflowMode === "recovering" && !activeRunMode
+        ? {
+            ok: false,
+            conflictCodes: ["REQUIRED_STAGE_NOT_SUCCEEDED"],
+          }
+        : { ok: true, conflictCodes: [] },
+    latestRun: activeRunMode ? activeRun : completedRun,
+    activeRun: activeRunMode ? activeRun : undefined,
+    runs: activeRunMode ? [completedRun, activeRun] : [completedRun],
     versions: versions.filter(
       (version) =>
         version.id === versionOne || stableVersionId === versionTwo,
@@ -238,7 +276,23 @@ try {
         body: "",
       });
     }
-    if (path === `/api/projects/${projectId}`) return json(project());
+    if (path === `/api/projects/${projectId}`) {
+      if (projectRequestFails) {
+        return json(
+          {
+            code: "UPSTREAM_ERROR",
+            message: "状态服务暂时不可用。",
+            retryable: true,
+          },
+          503,
+        );
+      }
+      if (delayNextProject) {
+        delayNextProject = false;
+        await firstProjectResponseGate;
+      }
+      return json(project());
+    }
     if (path === `/api/projects/${projectId}/files`) return json(fileTree());
     if (path === `/api/projects/${projectId}/versions`) {
       return json(
@@ -286,9 +340,27 @@ try {
     );
   });
 
-  await page.goto(`${baseURL}/project/${projectId}`);
+  const firstNavigation = page.goto(`${baseURL}/project/${projectId}`);
+  await page.getByTestId("build-pulse-skeleton").waitFor();
+  assert.equal(
+    await page.getByText("等待", { exact: true }).count(),
+    0,
+    "server state must not be represented as waiting before the snapshot arrives",
+  );
+  releaseFirstProjectResponse();
+  await firstNavigation;
   await page.getByRole("heading", { name: "从想法到可运行" }).waitFor();
   await page.getByRole("heading", { name: "可交互预览" }).waitFor();
+  assert.equal(
+    await page.getByText("已完成", { exact: true }).count(),
+    4,
+    "a completed project must restore all durable stage states",
+  );
+  await mkdir("test-results", { recursive: true });
+  await page.screenshot({
+    path: "test-results/workflow-completed.png",
+    fullPage: true,
+  });
 
   const artifactLinks = [
     ["查看产品规格", "product-spec"],
@@ -366,6 +438,10 @@ try {
   await page
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
+  await page.screenshot({
+    path: "test-results/workflow-completed.png",
+    fullPage: true,
+  });
   assert.equal(
     await page.getByText("正在启动稳定预览…").isVisible().catch(() => false),
     false,
@@ -413,6 +489,11 @@ try {
   assert.equal(
     await page.getByText("正在启动稳定预览…").isVisible().catch(() => false),
     false,
+  );
+  assert.equal(
+    await page.getByText("已完成", { exact: true }).count(),
+    4,
+    "switching workspace tabs must not rewrite stage state",
   );
 
   await page.getByRole("button", { name: "文件" }).click();
@@ -490,6 +571,15 @@ try {
     await page.getByLabel("/src/App.tsx 代码编辑器").isEditable(),
     false,
   );
+  projectRequestFails = true;
+  await page.getByRole("button", { name: "构建", exact: true }).click();
+  await page
+    .getByTestId("workflow-stale-cache")
+    .waitFor({ timeout: 6_000 });
+  await page
+    .getByText("状态刷新失败，已保留上次验证结果。", { exact: true })
+    .waitFor();
+  projectRequestFails = false;
 
   await mkdir("test-results", { recursive: true });
   await page.screenshot({
@@ -497,17 +587,40 @@ try {
     fullPage: true,
   });
 
+  activeRunMode = false;
+  workflowMode = "recovering";
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.reload();
+  await page.getByTestId("workflow-recovering").waitFor();
+  await page.getByText("恢复中", { exact: true }).waitFor();
+  await page
+    .locator('section[data-preview-state="ready"]')
+    .waitFor({ timeout: 20_000 });
+  await page.screenshot({
+    path: "test-results/workflow-recovering.png",
+    fullPage: true,
+  });
+  assert.ok(
+    consoleErrors.some((message) =>
+      message.includes("workflow_state_conflict"),
+    ),
+    "a consistency conflict should be reported",
+  );
+
   const relevantErrors = consoleErrors.filter(
     (message) =>
       !message.includes("cdn.tailwindcss.com") &&
       message !== "Failed to load resource: net::ERR_TIMED_OUT" &&
-      !message.includes("Download the React DevTools"),
+      !message.includes("Download the React DevTools") &&
+      !message.includes("workflow_state_conflict") &&
+      !message.includes("status of 503"),
   );
   assert.deepEqual(relevantErrors, []);
   console.log(
-    "workspace e2e passed: four stable artifact links, copied/refreshed/new-tab targets, validation timeout, initial load, tab roundtrip, rendered iframe with CDN timeout, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, versions, 375px",
+    "workspace e2e passed: no waiting flash, completed restore, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, initial load, tab roundtrip state isolation, rendered iframe with CDN timeout, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375px",
   );
 } catch (error) {
+  releaseFirstProjectResponse?.();
   console.error(serverOutput);
   if (page) {
     console.error(await page.locator("body").innerText().catch(() => ""));

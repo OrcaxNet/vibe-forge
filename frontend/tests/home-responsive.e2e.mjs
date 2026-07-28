@@ -89,6 +89,13 @@ try {
           updatedAt: "2026-07-28T00:00:00Z",
           messages: [],
           runs: [],
+          workflowStatus: "draft",
+          stateVersion: 1,
+          stateUpdatedAt: "2026-07-28T00:00:00Z",
+          responseUpdatedAt: "2026-07-28T00:00:01Z",
+          stages: [],
+          preview: { version: null, workflowRunId: null },
+          consistency: { ok: true, conflictCodes: [] },
         }),
       });
     }
