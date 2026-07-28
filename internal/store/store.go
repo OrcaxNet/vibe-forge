@@ -18,8 +18,8 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/OrcaxNet/vibe-forge/contracts"
+	"github.com/google/uuid"
 )
 
 // Store is the typed data-access layer over a single SQLite connection.
@@ -104,14 +104,16 @@ type Message struct {
 
 // Run is one generation task.
 type Run struct {
-	ID              string  `json:"id"`
-	ProjectID       string  `json:"projectId"`
-	Status          string  `json:"status"`
-	Prompt          string  `json:"prompt"`
-	BaseVersionID   *string `json:"baseVersionId"`
-	ActiveAttemptID *string `json:"activeAttemptId"`
-	CreatedAt       string  `json:"createdAt"`
-	UpdatedAt       string  `json:"updatedAt"`
+	ID              string               `json:"id"`
+	ProjectID       string               `json:"projectId"`
+	Status          string               `json:"status"`
+	Prompt          string               `json:"prompt"`
+	BaseVersionID   *string              `json:"baseVersionId"`
+	ActiveAttemptID *string              `json:"activeAttemptId"`
+	CreatedAt       string               `json:"createdAt"`
+	UpdatedAt       string               `json:"updatedAt"`
+	Stages          []WorkflowStageState `json:"stages,omitempty"`
+	StageArtifacts  []StageArtifact      `json:"stageArtifacts,omitempty"`
 }
 
 // Attempt is one execution attempt within a run (retries add attempts).
@@ -133,6 +135,37 @@ type StageArtifact struct {
 	ArtifactType string `json:"artifactType"`
 	ArtifactRef  string `json:"artifactRef"`
 	CreatedAt    string `json:"createdAt"`
+}
+
+// WorkflowStageState is the durable Build Pulse state for one stage in one
+// attempt. Stage is a compatibility alias for clients that predate stageKey.
+type WorkflowStageState struct {
+	StageKey     string  `json:"stageKey"`
+	Stage        string  `json:"stage"`
+	Status       string  `json:"status"`
+	Attempt      int     `json:"attempt"`
+	AttemptID    *string `json:"attemptId,omitempty"`
+	StartedAt    *string `json:"startedAt"`
+	FinishedAt   *string `json:"finishedAt"`
+	CompletedAt  *string `json:"completedAt,omitempty"`
+	UpdatedAt    string  `json:"updatedAt"`
+	ErrorCode    *string `json:"errorCode"`
+	ArtifactType *string `json:"artifactType,omitempty"`
+	ArtifactRef  *string `json:"artifactRef,omitempty"`
+}
+
+// WorkflowPreview identifies the stable preview and the workflow that produced
+// it. A failed latest run may legitimately point at a preview from an older run.
+type WorkflowPreview struct {
+	Version       *string `json:"version"`
+	WorkflowRunID *string `json:"workflowRunId"`
+}
+
+// WorkflowConsistency makes recovery conflicts explicit instead of silently
+// returning contradictory waiting/running/failed stage nodes.
+type WorkflowConsistency struct {
+	OK            bool     `json:"ok"`
+	ConflictCodes []string `json:"conflictCodes"`
 }
 
 // Iteration is one modification round (agent / manual / restore).
@@ -168,8 +201,8 @@ type File struct {
 
 // FileSnapshot is the input shape for committing a version's files.
 type FileSnapshot struct {
-	Path    string
-	Content string
+	Path     string
+	Content  string
 	Readonly bool
 }
 

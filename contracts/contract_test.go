@@ -28,7 +28,7 @@ func TestContractParses(t *testing.T) {
 // states are defined.
 func TestRequiredStatesPresent(t *testing.T) {
 	c := Load()
-	for _, name := range []string{"project", "run", "version", "stageNode"} {
+	for _, name := range []string{"project", "run", "version", "stageNode", "workflowProject", "workflowStage"} {
 		e, ok := c.States[name]
 		if !ok {
 			t.Fatalf("missing state enum %q", name)
@@ -45,6 +45,12 @@ func TestRequiredStatesPresent(t *testing.T) {
 	}
 	if !contains(c.States["version"].Values, "stable") {
 		t.Error("version state missing stable")
+	}
+	if !contains(c.States["workflowProject"].Values, "recovering") {
+		t.Error("workflow project state missing recovering")
+	}
+	if !contains(c.States["workflowStage"].Values, "cancelled") {
+		t.Error("workflow stage state missing cancelled")
 	}
 }
 
@@ -100,13 +106,13 @@ func TestRawIsCanonicalJSON(t *testing.T) {
 // TestHTTPStatusFor covers the helper used by the API layer.
 func TestHTTPStatusFor(t *testing.T) {
 	cases := map[string]int{
-		"VALIDATION_ERROR":         422,
-		"NOT_FOUND":                404,
-		"CONFLICT":                 409,
-		"RATE_LIMITED":             429,
-		"DEPENDENCY_UNAVAILABLE":   503,
-		"INTERNAL":                 500,
-		"UNKNOWN_CODE":             500,
+		"VALIDATION_ERROR":       422,
+		"NOT_FOUND":              404,
+		"CONFLICT":               409,
+		"RATE_LIMITED":           429,
+		"DEPENDENCY_UNAVAILABLE": 503,
+		"INTERNAL":               500,
+		"UNKNOWN_CODE":           500,
 	}
 	for code, want := range cases {
 		if got := HTTPStatusFor(code); got != want {

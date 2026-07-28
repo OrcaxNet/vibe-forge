@@ -137,6 +137,11 @@ func (s *Store) PromoteDraftVersion(ctx context.Context, draftVersionID, runID, 
 				return fmt.Errorf("mark attempt succeeded: %w", err)
 			}
 		}
+		if runID != "" {
+			if err := bumpWorkflowForRunTx(ctx, tx, runID, "completed", now); err != nil {
+				return err
+			}
+		}
 		v.Status = "stable"
 		result = v
 		return nil
@@ -189,6 +194,11 @@ func (s *Store) FailDraftVersion(ctx context.Context, draftVersionID, runID, att
 				return fmt.Errorf("mark attempt failed: %w", err)
 			}
 		}
+		if runID != "" {
+			if err := bumpWorkflowForRunTx(ctx, tx, runID, "failed", now); err != nil {
+				return err
+			}
+		}
 		v.Status = "failed"
 		result = v
 		return nil
@@ -213,7 +223,7 @@ func (s *Store) BeginAttempt(ctx context.Context, runID, attemptID string) error
 			now, runID); err != nil {
 			return fmt.Errorf("begin run: %w", err)
 		}
-		return nil
+		return bumpWorkflowForRunTx(ctx, tx, runID, "running", now)
 	})
 }
 
@@ -235,7 +245,7 @@ func (s *Store) FailRun(ctx context.Context, runID string) error {
 			  WHERE id = ?`, now, runID); err != nil {
 			return fmt.Errorf("fail run: %w", err)
 		}
-		return nil
+		return bumpWorkflowForRunTx(ctx, tx, runID, "failed", now)
 	})
 }
 
@@ -274,7 +284,10 @@ func (s *Store) NewAttempt(ctx context.Context, runID string, autoFixRound int) 
 			a.ID, now, runID); err != nil {
 			return fmt.Errorf("set active attempt: %w", err)
 		}
-		return nil
+		if err := initAttemptStagesTx(ctx, tx, runID, a.ID, a.Sequence, now); err != nil {
+			return err
+		}
+		return bumpWorkflowForRunTx(ctx, tx, runID, "running", now)
 	})
 	return a, err
 }

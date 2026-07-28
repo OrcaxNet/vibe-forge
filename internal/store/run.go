@@ -100,6 +100,12 @@ func (s *Store) CreateRun(ctx context.Context, projectID, prompt, baseVersionID,
 			`UPDATE runs SET active_attempt_id = ? WHERE id = ?`, attemptID, runID); err != nil {
 			return 0, nil, fmt.Errorf("set active attempt: %w", err)
 		}
+		if err := initAttemptStagesTx(ctx, tx, runID, attemptID, 1, now); err != nil {
+			return 0, nil, err
+		}
+		if err := pointProjectWorkflowTx(ctx, tx, projectID, runID, runWorkflowStatus(runStatus), now); err != nil {
+			return 0, nil, err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO iterations(id, project_id, run_id, kind, base_version_id, result_version_id, prompt, created_at)
 			 VALUES(?, ?, ?, 'agent', ?, NULL, ?, ?)`,
@@ -200,6 +206,12 @@ func (s *Store) RetryRun(ctx context.Context, runID, idempotencyKey string) (sta
 			attemptID, now, runID); err != nil {
 			return 0, nil, fmt.Errorf("activate retry attempt: %w", err)
 		}
+		if err := initAttemptStagesTx(ctx, tx, runID, attemptID, maxSeq+1, now); err != nil {
+			return 0, nil, err
+		}
+		if err := bumpWorkflowForRunTx(ctx, tx, runID, "running", now); err != nil {
+			return 0, nil, err
+		}
 		out, err := json.Marshal(struct {
 			AttemptID string `json:"attemptId"`
 		}{AttemptID: attemptID})
@@ -260,12 +272,31 @@ func (s *Store) RecordStageArtifact(ctx context.Context, runID, attemptID, stage
 		ID: newID(), RunID: runID, AttemptID: attemptID, Stage: stage,
 		ArtifactType: artifactType, ArtifactRef: artifactRef, CreatedAt: s.nowTS(),
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO stage_artifacts(id, run_id, attempt_id, stage, artifact_type, artifact_ref, created_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.RunID, a.AttemptID, a.Stage, a.ArtifactType, a.ArtifactRef, a.CreatedAt)
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var attempt int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT sequence FROM attempts WHERE id = ? AND run_id = ?`,
+			attemptID, runID).Scan(&attempt); err != nil {
+			if isNoRows(err) {
+				return notFound("attempt not found for run")
+			}
+			return fmt.Errorf("load artifact attempt: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO stage_artifacts(id, run_id, attempt_id, stage, artifact_type, artifact_ref, created_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			a.ID, a.RunID, a.AttemptID, a.Stage, a.ArtifactType, a.ArtifactRef, a.CreatedAt); err != nil {
+			return fmt.Errorf("insert stage artifact: %w", err)
+		}
+		if err := setStageStateForAttemptTx(
+			ctx, tx, runID, attemptID, attempt, stage, "succeeded", a.CreatedAt, nil,
+		); err != nil {
+			return err
+		}
+		return bumpWorkflowForRunTx(ctx, tx, runID, "running", a.CreatedAt)
+	})
 	if err != nil {
-		return StageArtifact{}, fmt.Errorf("insert stage artifact: %w", err)
+		return StageArtifact{}, err
 	}
 	return a, nil
 }
@@ -291,7 +322,7 @@ func (s *Store) AppendEvent(ctx context.Context, runID, eventType string, payloa
 		if err != nil {
 			return fmt.Errorf("insert event: %w", err)
 		}
-		return nil
+		return applyWorkflowEventTx(ctx, tx, runID, eventType, e.CreatedAt, payload)
 	})
 	if err != nil {
 		return Event{}, err
@@ -327,12 +358,23 @@ func (s *Store) ListEvents(ctx context.Context, runID string, afterSeq int) ([]E
 // SetRunStatus transitions a run (and optionally its active attempt) to a new
 // status. Used by FLO-60 to drive queued->running->succeeded/failed.
 func (s *Store) SetRunStatus(ctx context.Context, runID, status string) error {
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`,
-		status, s.nowTS(), runID); err != nil {
-		return fmt.Errorf("update run status: %w", err)
-	}
-	return nil
+	now := s.nowTS()
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`,
+			status, now, runID)
+		if err != nil {
+			return fmt.Errorf("update run status: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read run update count: %w", err)
+		}
+		if n == 0 {
+			return notFound("run not found")
+		}
+		return bumpWorkflowForRunTx(ctx, tx, runID, runWorkflowStatus(status), now)
+	})
 }
 
 // MarkActiveRunsInterrupted transitions every queued/running run to interrupted.
@@ -340,11 +382,61 @@ func (s *Store) SetRunStatus(ctx context.Context, runID, status string) error {
 // FLO-59). Returns the count of runs reconciled.
 func (s *Store) MarkActiveRunsInterrupted(ctx context.Context) (int, error) {
 	now := s.nowTS()
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status = 'interrupted', updated_at = ? WHERE status IN ('queued','running')`, now)
-	if err != nil {
-		return 0, fmt.Errorf("reconcile interrupted runs: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	var count int
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id FROM runs WHERE status IN ('queued','running') ORDER BY id`)
+		if err != nil {
+			return fmt.Errorf("list active runs for reconcile: %w", err)
+		}
+		var runIDs []string
+		for rows.Next() {
+			var runID string
+			if err := rows.Scan(&runID); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan active run for reconcile: %w", err)
+			}
+			runIDs = append(runIDs, runID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate active runs for reconcile: %w", err)
+		}
+		rows.Close()
+		for _, runID := range runIDs {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE workflow_stage_runs
+				    SET status = 'cancelled', finished_at = ?, updated_at = ?
+				  WHERE workflow_run_id = ?
+				    AND attempt = (SELECT MAX(attempt) FROM workflow_stage_runs WHERE workflow_run_id = ?)
+				    AND status = 'running'`,
+				now, now, runID, runID); err != nil {
+				return fmt.Errorf("cancel interrupted stage: %w", err)
+			}
+			if err := bumpWorkflowForRunTx(ctx, tx, runID, "cancelled", now); err != nil {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE attempts SET status = 'interrupted'
+			  WHERE status IN ('queued','running')
+			    AND run_id IN (SELECT id FROM runs WHERE status IN ('queued','running'))`)
+		if err != nil {
+			return fmt.Errorf("reconcile interrupted attempts: %w", err)
+		}
+		_ = res
+		runRes, err := tx.ExecContext(ctx,
+			`UPDATE runs SET status = 'interrupted', active_attempt_id = NULL, updated_at = ?
+			  WHERE status IN ('queued','running')`, now)
+		if err != nil {
+			return fmt.Errorf("reconcile interrupted runs: %w", err)
+		}
+		n, err := runRes.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read reconciled run count: %w", err)
+		}
+		count = int(n)
+		return nil
+	})
+	return count, err
 }

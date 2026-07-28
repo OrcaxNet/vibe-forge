@@ -161,6 +161,11 @@ func (s *Store) commitVersionSteps(ctx context.Context, tx *sql.Tx, in CommitInp
 			return Version{}, fmt.Errorf("mark attempt succeeded: %w", err)
 		}
 	}
+	if in.RunID != "" {
+		if err := bumpWorkflowForRunTx(ctx, tx, in.RunID, "completed", now); err != nil {
+			return Version{}, err
+		}
+	}
 	return v, nil
 }
 
@@ -240,6 +245,11 @@ func (s *Store) FailVersion(ctx context.Context, in FailInput) (Version, error) 
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE attempts SET status = 'failed' WHERE id = ?`, in.AttemptID); err != nil {
 				return fmt.Errorf("mark attempt failed: %w", err)
+			}
+		}
+		if in.RunID != "" {
+			if err := bumpWorkflowForRunTx(ctx, tx, in.RunID, "failed", now); err != nil {
+				return err
 			}
 		}
 		result = v

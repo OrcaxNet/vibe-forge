@@ -48,6 +48,9 @@ func (s *Store) CreateProject(ctx context.Context, title, initialPrompt, idempot
 			p.ID, p.Title, p.Status, p.CreatedAt, p.UpdatedAt); err != nil {
 			return 0, nil, fmt.Errorf("insert project: %w", err)
 		}
+		if err := initProjectWorkflowTx(ctx, tx, p.ID, now); err != nil {
+			return 0, nil, err
+		}
 		// Persist the initial user message atomically with the project. This is
 		// the durable home of the prompt: it is queryable before any run starts
 		// and survives a run-startup failure (503/429/config-missing). createRun
@@ -109,10 +112,20 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 // ProjectDetail is the aggregated getProject response (contract §paths.getProject).
 type ProjectDetail struct {
 	Project
-	Messages  []Message       `json:"messages"`
-	Runs      []Run           `json:"runs"`
-	Versions  []Version       `json:"versions"`
-	Artifacts []StageArtifact `json:"artifacts"`
+	Messages          []Message            `json:"messages"`
+	Runs              []Run                `json:"runs"`
+	Versions          []Version            `json:"versions"`
+	Artifacts         []StageArtifact      `json:"artifacts"`
+	WorkflowStatus    string               `json:"workflowStatus"`
+	WorkflowRunID     *string              `json:"workflowRunId"`
+	StateVersion      int64                `json:"stateVersion"`
+	StateUpdatedAt    string               `json:"stateUpdatedAt"`
+	ResponseUpdatedAt string               `json:"responseUpdatedAt"`
+	Stages            []WorkflowStageState `json:"stages"`
+	Preview           WorkflowPreview      `json:"preview"`
+	Consistency       WorkflowConsistency  `json:"consistency"`
+	LatestRun         *Run                 `json:"latestRun,omitempty"`
+	ActiveRun         *Run                 `json:"activeRun,omitempty"`
 }
 
 // GetProject returns the aggregated project detail. Per C-FR-02 ("打开 A 后 A
@@ -155,6 +168,9 @@ func (s *Store) GetProject(ctx context.Context, id string) (*ProjectDetail, erro
 			return err
 		}
 		if err := scanArtifacts(ctx, tx, id, &d.Artifacts); err != nil {
+			return err
+		}
+		if err := s.loadWorkflowSnapshotTx(ctx, tx, d); err != nil {
 			return err
 		}
 		return nil
