@@ -248,7 +248,7 @@ Explicitly outside the MVP:
    shared model quota. The self-hosted demo should be stopped when unattended:
 
    ```bash
-   docker stop vibe-forge-tunnel vibe-forge-frontend vibe-forge-backend
+   docker stop vibe-forge-named vibe-forge-frontend vibe-forge-backend
    ```
 
 ## Submission
