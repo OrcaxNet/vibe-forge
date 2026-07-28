@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/OrcaxNet/vibe-forge/internal/compile"
 	"github.com/OrcaxNet/vibe-forge/scaffold"
 )
 
@@ -123,31 +124,10 @@ func ValidateFilePath(p string) error {
 	return nil
 }
 
-// ForbiddenCodePatterns are tokens the generated App.tsx must never contain:
-// the scaffold renders in a browser Sandpack with no shell, so shell/exec and
-// install commands are categorically disallowed (B-FR-01: no shell, no npm
-// install). Matches are case-insensitive.
-var forbiddenCodePatterns = []string{
-	"child_process",
-	"execsync",
-	"spawnSync",
-	"require('fs')",
-	"require(\"fs\")",
-	"npm install",
-	"npx ",
-	"yarn add",
-	"pnpm add",
-	"import fs",
-	"process.env",
-}
-
-// forbiddenInCode reports whether content contains a forbidden pattern.
+// forbiddenInCode reports whether content contains a forbidden pattern
+// (shell/exec/install tokens - B-FR-01). The pattern list lives in the
+// internal/compile leaf package so the manual-edit compile gate enforces the
+// same ban (FLO-77).
 func forbiddenInCode(content string) (string, bool) {
-	lower := strings.ToLower(content)
-	for _, pat := range forbiddenCodePatterns {
-		if strings.Contains(lower, pat) {
-			return pat, true
-		}
-	}
-	return "", false
+	return compile.ForbiddenInCode(content)
 }
