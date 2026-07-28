@@ -37,6 +37,8 @@ export const IDEMPOTENCY_TTL_SECONDS: number = contract.idempotency.ttlSeconds;
 export const WRITABLE_FILE_PATH: string = contract.limits.writableFilePath;
 export const PROMPT_MAX_CHARS: number = contract.limits.promptMaxChars;
 export const PROMPT_MIN_CHARS: number = contract.limits.promptMinChars;
+export const SANDPACK_READY_TIMEOUT_MS: number =
+  contract.limits.sandpackReadyTimeoutSeconds * 1_000;
 
 /** REST paths keyed by contract name (PRD-A/B/C §5.1). */
 export const PATHS = contract.paths as Record<string, {

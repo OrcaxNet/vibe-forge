@@ -1,4 +1,7 @@
-import { WRITABLE_FILE_PATH } from "./contract";
+import {
+  SANDPACK_READY_TIMEOUT_MS,
+  WRITABLE_FILE_PATH,
+} from "./contract";
 
 export type FileTreeEntry = {
   path: string;
@@ -37,7 +40,9 @@ export type PreviewFailureKind =
   | "resource_timeout"
   | "runtime_error";
 
-export const PREVIEW_READY_TIMEOUT_MS = 10_000;
+export const PREVIEW_READY_TIMEOUT_MS = SANDPACK_READY_TIMEOUT_MS;
+export const PREVIEW_AUTOMATIC_RETRY_LIMIT = 1;
+export const PREVIEW_RETRY_DELAY_MS = 750;
 
 export class PreviewDeadlineError extends Error {
   readonly kind: PreviewFailureKind;
@@ -213,7 +218,19 @@ export function sandpackFiles(
     Object.entries(files).map(([path, code]) => [
       path,
       {
-        code,
+        // Older stable versions contain a render-blocking Tailwind Play CDN
+        // script. Keep the verified source immutable, but make that optional
+        // styling dependency non-blocking in the runtime sent to Sandpack.
+        code:
+          path === "/index.html"
+            ? code.replace(
+                /<script([^>]*\bsrc=["']https:\/\/cdn\.tailwindcss\.com\/?["'][^>]*)><\/script>/gi,
+                (tag, attributes: string) =>
+                  /\b(?:async|defer)\b/i.test(attributes)
+                    ? tag
+                    : `<script async${attributes}></script>`,
+              )
+            : code,
         readOnly: path !== WRITABLE_FILE_PATH,
         hidden: path !== WRITABLE_FILE_PATH,
       },

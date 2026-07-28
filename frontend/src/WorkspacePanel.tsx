@@ -20,7 +20,9 @@ import { WRITABLE_FILE_PATH } from "./contract";
 import {
   createVerifiedPreview,
   isFileEditLocked,
+  PREVIEW_AUTOMATIC_RETRY_LIMIT,
   PREVIEW_READY_TIMEOUT_MS,
+  PREVIEW_RETRY_DELAY_MS,
   PreviewDeadlineError,
   sandpackFiles,
   shouldStagePreview,
@@ -130,17 +132,92 @@ class PreviewBoundary extends Component<
   }
 }
 
+type PreviewDiagnosticReason =
+  | "client_connected"
+  | "iframe_rendered"
+  | "sandpack_done"
+  | "client_connect_timeout"
+  | "iframe_ready_timeout"
+  | "sandpack_timeout"
+  | "runtime_error";
+
+function previewResourceTimings() {
+  return performance
+    .getEntriesByType("resource")
+    .filter((entry) =>
+      /(?:sandpack\.codesandbox\.io|cdn\.tailwindcss\.com)/.test(entry.name),
+    )
+    .slice(-8)
+    .map((entry) => {
+      let origin = "unknown";
+      try {
+        origin = new URL(entry.name).origin;
+      } catch {
+        // ResourceTiming can contain a browser-defined non-URL name.
+      }
+      return {
+        origin,
+        startMs: Math.round(entry.startTime),
+        durationMs: Math.round(entry.duration),
+      };
+    });
+}
+
+function emitPreviewDiagnostic({
+  versionId,
+  attempt,
+  event,
+  reason,
+  startedAt,
+  clientConnectedAt,
+  sandpackStatus,
+}: {
+  versionId: string;
+  attempt: number;
+  event: "progress" | "ready" | "failure";
+  reason: PreviewDiagnosticReason;
+  startedAt: number;
+  clientConnectedAt?: number;
+  sandpackStatus: string;
+}) {
+  const detail = {
+    versionId,
+    attempt,
+    event,
+    reason,
+    elapsedMs: Math.round(performance.now() - startedAt),
+    clientConnectedMs:
+      clientConnectedAt === undefined
+        ? undefined
+        : Math.round(clientConnectedAt - startedAt),
+    sandpackStatus,
+    online: navigator.onLine,
+    resources: previewResourceTimings(),
+  };
+  console.info("[preview-runtime]", detail);
+  window.dispatchEvent(
+    new CustomEvent("vibe-forge:preview-runtime", { detail }),
+  );
+}
+
 function PreviewLifecycle({
   previewRef,
+  versionId,
+  attempt,
   onReady,
   onError,
 }: {
   previewRef: RefObject<SandpackPreviewRef>;
+  versionId: string;
+  attempt: number;
   onReady: () => void;
   onError: (kind: PreviewFailureKind, message: string) => void;
 }) {
   const { sandpack } = useSandpack();
   const settled = useRef(false);
+  const startedAt = useRef(performance.now());
+  const clientConnectedAt = useRef<number>();
+  const sandpackStatusRef = useRef(String(sandpack.status));
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
 
@@ -150,18 +227,47 @@ function PreviewLifecycle({
   }, [onError, onReady]);
 
   useEffect(() => {
+    sandpackStatusRef.current = String(sandpack.status);
+  }, [sandpack.status]);
+
+  const reportReady = useCallback(
+    (reason: "iframe_rendered" | "sandpack_done") => {
+      if (settled.current) return;
+      settled.current = true;
+      emitPreviewDiagnostic({
+        versionId,
+        attempt,
+        event: "ready",
+        reason,
+        startedAt: startedAt.current,
+        clientConnectedAt: clientConnectedAt.current,
+        sandpackStatus: sandpackStatusRef.current,
+      });
+      onReadyRef.current();
+    },
+    [attempt, versionId],
+  );
+
+  useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
     let connectTimer: number | undefined;
 
-    const reportReady = () => {
-      if (settled.current) return;
-      settled.current = true;
-      onReadyRef.current();
-    };
     const reportResourceTimeout = () => {
       if (settled.current) return;
       settled.current = true;
+      emitPreviewDiagnostic({
+        versionId,
+        attempt,
+        event: "failure",
+        reason:
+          clientConnectedAt.current === undefined
+            ? "client_connect_timeout"
+            : "iframe_ready_timeout",
+        startedAt: startedAt.current,
+        clientConnectedAt: clientConnectedAt.current,
+        sandpackStatus: sandpackStatusRef.current,
+      });
       onErrorRef.current(
         "resource_timeout",
         "预览资源 10 秒内没有就绪，请检查网络后重试。",
@@ -174,11 +280,24 @@ function PreviewLifecycle({
         connectTimer = window.setTimeout(connect, 25);
         return;
       }
+      clientConnectedAt.current = performance.now();
+      emitPreviewDiagnostic({
+        versionId,
+        attempt,
+        event: "progress",
+        reason: "client_connected",
+        startedAt: startedAt.current,
+        clientConnectedAt: clientConnectedAt.current,
+        sandpackStatus: sandpackStatusRef.current,
+      });
       unsubscribe = client.listen((message) => {
-        // `done` may precede a failed external resource. A positive resize is
-        // emitted by this iframe client only after it has rendered content.
+        // The optional Tailwind CDN is non-blocking, so Sandpack's compile
+        // `done` handshake is sufficient; resize remains a second positive
+        // signal for runtimes that emit it after rendering.
         if (message.type === "resize" && message.height > 0) {
-          reportReady();
+          reportReady("iframe_rendered");
+        } else if (message.type === "done") {
+          reportReady("sandpack_done");
         }
       });
     };
@@ -194,7 +313,7 @@ function PreviewLifecycle({
       window.clearTimeout(deadline);
       unsubscribe?.();
     };
-  }, [previewRef]);
+  }, [attempt, previewRef, reportReady, versionId]);
 
   useEffect(() => {
     if (settled.current) return;
@@ -202,28 +321,51 @@ function PreviewLifecycle({
       const message =
         sandpack.error.message || "代码没有通过 Sandpack 编译。";
       settled.current = true;
+      emitPreviewDiagnostic({
+        versionId,
+        attempt,
+        event: "failure",
+        reason: "runtime_error",
+        startedAt: startedAt.current,
+        clientConnectedAt: clientConnectedAt.current,
+        sandpackStatus: sandpackStatusRef.current,
+      });
       onErrorRef.current("runtime_error", message);
       return;
     }
     if (sandpack.status === "timeout") {
       settled.current = true;
+      emitPreviewDiagnostic({
+        versionId,
+        attempt,
+        event: "failure",
+        reason: "sandpack_timeout",
+        startedAt: startedAt.current,
+        clientConnectedAt: clientConnectedAt.current,
+        sandpackStatus: sandpackStatusRef.current,
+      });
       onErrorRef.current(
         "resource_timeout",
         "预览资源 10 秒内没有就绪，请检查网络后重试。",
       );
       return;
     }
-  }, [sandpack.error, sandpack.status]);
+    if (sandpack.status === "done") {
+      reportReady("sandpack_done");
+    }
+  }, [attempt, reportReady, sandpack.error, sandpack.status, versionId]);
 
   return null;
 }
 
 function SandboxedPreview({
   snapshot,
+  attempt,
   onReady,
   onError,
 }: {
   snapshot: PreviewSnapshot;
+  attempt: number;
   onReady: () => void;
   onError: (kind: PreviewFailureKind, message: string) => void;
 }) {
@@ -261,14 +403,15 @@ function SandboxedPreview({
             visibleFiles: [WRITABLE_FILE_PATH],
             autorun: true,
             autoReload: true,
-            bundlerTimeOut: 10_000,
+            bundlerTimeOut: PREVIEW_READY_TIMEOUT_MS * 2,
             recompileMode: "immediate",
-            externalResources: ["https://cdn.tailwindcss.com"],
           }}
           theme="light"
         >
           <PreviewLifecycle
             previewRef={previewRef}
+            versionId={snapshot.versionId}
+            attempt={attempt}
             onReady={onReady}
             onError={onError}
           />
@@ -334,14 +477,19 @@ export default function WorkspacePanel({
   const [pendingPreview, setPendingPreview] =
     useState<PreviewSnapshot | null>(null);
   const [previewState, setPreviewState] = useState<
-    "idle" | "validating" | "booting" | "ready" | "error"
+    "idle" | "validating" | "booting" | "recovering" | "ready" | "error"
   >("idle");
   const [previewError, setPreviewError] = useState("");
+  const [previewNotice, setPreviewNotice] = useState("");
   const [previewErrorKind, setPreviewErrorKind] =
     useState<PreviewFailureKind | null>(null);
-  const [runtimeAttempt, setRuntimeAttempt] = useState(0);
+  const [runtimeAttempts, setRuntimeAttempts] = useState<
+    Record<string, number>
+  >({});
   const requestSequence = useRef(0);
   const autoStagedVersion = useRef("");
+  const automaticRetryCounts = useRef<Record<string, number>>({});
+  const retryTimer = useRef<number>();
 
   const dirty = editorContent !== savedContent;
   const selectedFile = fileTree.files.find(
@@ -375,13 +523,29 @@ export default function WorkspacePanel({
     setPendingPreview(null);
     setPreviewState("idle");
     setPreviewError("");
+    setPreviewNotice("");
     setPreviewErrorKind(null);
+    setRuntimeAttempts({});
     autoStagedVersion.current = "";
+    automaticRetryCounts.current = {};
+    if (retryTimer.current !== undefined) {
+      window.clearTimeout(retryTimer.current);
+      retryTimer.current = undefined;
+    }
     setSelectedPath(WRITABLE_FILE_PATH);
     setEditorContent("");
     setSavedContent("");
     void refreshWorkspaceData();
   }, [projectId, refreshWorkspaceData]);
+
+  useEffect(
+    () => () => {
+      if (retryTimer.current !== undefined) {
+        window.clearTimeout(retryTimer.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (revision > 0) void refreshWorkspaceData();
@@ -415,6 +579,7 @@ export default function WorkspacePanel({
       const sequence = ++requestSequence.current;
       setPreviewState("validating");
       setPreviewError("");
+      setPreviewNotice("");
       setPreviewErrorKind(null);
       try {
         const [nextVersions, files] = await withPreviewDeadline(
@@ -470,23 +635,12 @@ export default function WorkspacePanel({
     void stagePreview(stableVersionId);
   }, [stableVersionId, stagePreview]);
 
-  useEffect(() => {
-    const versionId = pendingPreview?.versionId;
-    if (tab !== "preview" || !versionId) {
-      return undefined;
-    }
-    const deadline = window.setTimeout(() => {
-      setPendingPreview((current) =>
-        current?.versionId === versionId ? null : current,
-      );
-      setPreviewState("error");
-      setPreviewErrorKind("resource_timeout");
-      setPreviewError(
-        "预览资源 10 秒内没有就绪，请检查网络后重试。 上一稳定预览未受影响。",
-      );
-    }, PREVIEW_READY_TIMEOUT_MS);
-    return () => window.clearTimeout(deadline);
-  }, [pendingPreview?.versionId, tab]);
+  const restartRuntime = useCallback((versionId: string) => {
+    setRuntimeAttempts((attempts) => ({
+      ...attempts,
+      [versionId]: (attempts[versionId] ?? 0) + 1,
+    }));
+  }, []);
 
   const handleRuntimeReady = useCallback(
     (snapshot: PreviewSnapshot) => {
@@ -499,7 +653,13 @@ export default function WorkspacePanel({
       }
       setPreviewState("ready");
       setPreviewError("");
+      setPreviewNotice("");
       setPreviewErrorKind(null);
+      automaticRetryCounts.current[snapshot.versionId] = 0;
+      if (retryTimer.current !== undefined) {
+        window.clearTimeout(retryTimer.current);
+        retryTimer.current = undefined;
+      }
       void refreshWorkspaceData();
     },
     [
@@ -515,26 +675,73 @@ export default function WorkspacePanel({
       kind: PreviewFailureKind,
       message: string,
     ) => {
+      const isPending = pendingPreview?.versionId === snapshot.versionId;
+      const isVisible = visiblePreview?.versionId === snapshot.versionId;
+      if (!isPending && !isVisible) return;
+
       const safeMessage = message.split("\n")[0] || "预览没有编译完成。";
-      if (pendingPreview?.versionId === snapshot.versionId) {
+      const retryCount =
+        automaticRetryCounts.current[snapshot.versionId] ?? 0;
+      if (
+        kind === "resource_timeout" &&
+        retryCount < PREVIEW_AUTOMATIC_RETRY_LIMIT
+      ) {
+        automaticRetryCounts.current[snapshot.versionId] = retryCount + 1;
+        setPreviewState("recovering");
+        setPreviewError("");
+        setPreviewErrorKind(null);
+        setPreviewNotice("首次加载较慢，正在自动重试稳定预览…");
+        if (retryTimer.current !== undefined) {
+          window.clearTimeout(retryTimer.current);
+        }
+        retryTimer.current = window.setTimeout(() => {
+          retryTimer.current = undefined;
+          setPreviewState("booting");
+          setPreviewNotice("");
+          restartRuntime(snapshot.versionId);
+        }, PREVIEW_RETRY_DELAY_MS);
+        return;
+      }
+
+      if (isPending) {
         setPendingPreview(null);
       }
       setPreviewState("error");
       setPreviewErrorKind(kind);
-      setPreviewError(`${safeMessage} 上一稳定预览未受影响。`);
+      setPreviewNotice("");
+      setPreviewError(
+        `${
+          kind === "resource_timeout" && retryCount > 0
+            ? "自动重试后预览资源仍未就绪。"
+            : safeMessage
+        } 上一稳定预览未受影响。`,
+      );
     },
-    [pendingPreview?.versionId],
+    [
+      pendingPreview?.versionId,
+      restartRuntime,
+      visiblePreview?.versionId,
+    ],
   );
 
   const retryPreview = () => {
+    const targetVersionId = stableVersionId ?? visiblePreview?.versionId;
+    if (retryTimer.current !== undefined) {
+      window.clearTimeout(retryTimer.current);
+      retryTimer.current = undefined;
+    }
+    if (targetVersionId) {
+      automaticRetryCounts.current[targetVersionId] = 0;
+    }
     setPreviewError("");
+    setPreviewNotice("");
     setPreviewErrorKind(null);
     setPreviewState("booting");
     if (stableVersionId && visiblePreview?.versionId !== stableVersionId) {
       void stagePreview(stableVersionId);
       return;
     }
-    setRuntimeAttempt((attempt) => attempt + 1);
+    if (targetVersionId) restartRuntime(targetVersionId);
   };
 
   const chooseFile = (file: FileTreeEntry) => {
@@ -670,6 +877,16 @@ export default function WorkspacePanel({
           </div>
         )}
 
+        {previewNotice && (
+          <div
+            className="flex items-center gap-3 border-b border-[#cbd9f2] bg-[#f3f7ff] px-5 py-3 text-sm font-semibold text-[#315a99]"
+            aria-live="polite"
+          >
+            <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[#1756d8] motion-reduce:animate-none" />
+            {previewNotice}
+          </div>
+        )}
+
         {previewError && (
           <div
             role="alert"
@@ -692,7 +909,7 @@ export default function WorkspacePanel({
         <div className="relative min-h-0 flex-1 overflow-hidden bg-[#e8ebef] p-3 sm:p-5">
           {runtimes.map((snapshot) => (
             <div
-              key={`${snapshot.versionId}-${runtimeAttempt}`}
+              key={`${snapshot.versionId}-${runtimeAttempts[snapshot.versionId] ?? 0}`}
               className={`absolute inset-3 overflow-hidden rounded-2xl border border-[#cfd6df] bg-white shadow-[0_18px_50px_rgba(30,43,66,.13)] sm:inset-5 ${
                 snapshot.versionId === shownVersionId
                   ? "z-10 opacity-100"
@@ -704,6 +921,7 @@ export default function WorkspacePanel({
             >
               <SandboxedPreview
                 snapshot={snapshot}
+                attempt={runtimeAttempts[snapshot.versionId] ?? 0}
                 onReady={() => handleRuntimeReady(snapshot)}
                 onError={(kind, message) =>
                   reportPreviewError(snapshot, kind, message)
@@ -730,21 +948,25 @@ export default function WorkspacePanel({
             </div>
           )}
 
-          {(previewState === "validating" || previewState === "booting") &&
+          {(previewState === "validating" ||
+            previewState === "booting" ||
+            previewState === "recovering") &&
             !visiblePreview && (
-            <div
-              className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-white/72 backdrop-blur-sm"
-              aria-live="polite"
-            >
-              <div className="text-center">
-                <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-[#cbd5e4] border-t-[#1756d8] motion-reduce:animate-none" />
-                <p className="mt-3 text-sm font-bold text-[#59687d]">
-                  {previewState === "validating"
-                    ? "正在校验稳定版本…"
-                    : "正在启动稳定预览…"}
-                </p>
+              <div
+                className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-white/72 backdrop-blur-sm"
+                aria-live="polite"
+              >
+                <div className="text-center">
+                  <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-[#cbd5e4] border-t-[#1756d8] motion-reduce:animate-none" />
+                  <p className="mt-3 text-sm font-bold text-[#59687d]">
+                    {previewState === "validating"
+                      ? "正在校验稳定版本…"
+                      : previewState === "recovering"
+                        ? "首次加载较慢，正在自动恢复…"
+                        : "正在启动稳定预览…"}
+                  </p>
+                </div>
               </div>
-            </div>
             )}
         </div>
       </section>
