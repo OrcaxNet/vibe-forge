@@ -10,6 +10,14 @@ const chromePath =
 const projectId = "project-1";
 const versionOne = "11111111-1111-4111-8111-111111111111";
 const versionTwo = "22222222-2222-4222-8222-222222222222";
+const productSpec =
+  "# Product Spec: 计算器\n\n中文 空格\n换行 # `code` should stay out of the URL";
+const architecturePlan = "## Architecture\n\nReact → API → SQLite";
+const compileResult = JSON.stringify({
+  pass: true,
+  filesHash: "verified-build-hash",
+  errors: [],
+});
 
 const scaffold = {
   "/index.html": `<!doctype html><html><head><script src="https://cdn.tailwindcss.com"></script></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>`,
@@ -92,6 +100,34 @@ function project() {
         content: "做一个可以新增和删除习惯的追踪器",
       },
     ],
+    latestRun: {
+      id: "run-complete",
+      status: "succeeded",
+      stages: [
+        { stage: "pm", status: "succeeded" },
+        { stage: "architect", status: "succeeded" },
+        { stage: "engineer", status: "succeeded" },
+        { stage: "qa", status: "succeeded" },
+      ],
+      stageArtifacts: [
+        { stage: "pm", artifactType: "spec", artifactRef: productSpec },
+        {
+          stage: "architect",
+          artifactType: "structure_plan",
+          artifactRef: architecturePlan,
+        },
+        {
+          stage: "engineer",
+          artifactType: "file_ref",
+          artifactRef: `${versionOne}:/src/App.tsx`,
+        },
+        {
+          stage: "qa",
+          artifactType: "compile_result",
+          artifactRef: compileResult,
+        },
+      ],
+    },
     runs: activeRunMode
       ? [
           {
@@ -163,25 +199,27 @@ try {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
-  await page.route(/cdn\.tailwindcss\.com/, (route) =>
+  await page.context().route(/cdn\.tailwindcss\.com/, (route) =>
     route.abort("timedout"),
   );
-  await page.route(/https:\/\/.*sandpack\.codesandbox\.io\/.*/, (route) => {
-    if (
-      runtimeBlocked &&
-      route.request().resourceType() === "document" &&
-      ++runtimeDocumentCount >= 2
-    ) {
-      return route.fulfill({
-        status: 200,
-        contentType: "text/html; charset=utf-8",
-        body: `<!doctype html><html><body><main><h1>iframe 已渲染，运行协议未就绪</h1></main></body></html>`,
-      });
-    }
-    return route.continue();
-  });
+  await page
+    .context()
+    .route(/https:\/\/.*sandpack\.codesandbox\.io\/.*/, (route) => {
+      if (
+        runtimeBlocked &&
+        route.request().resourceType() === "document" &&
+        ++runtimeDocumentCount >= 2
+      ) {
+        return route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: `<!doctype html><html><body><main><h1>iframe 已渲染，运行协议未就绪</h1></main></body></html>`,
+        });
+      }
+      return route.continue();
+    });
 
-  await page.route("**/api/**", async (route) => {
+  await page.context().route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
@@ -251,6 +289,62 @@ try {
   await page.goto(`${baseURL}/project/${projectId}`);
   await page.getByRole("heading", { name: "从想法到可运行" }).waitFor();
   await page.getByRole("heading", { name: "可交互预览" }).waitFor();
+
+  const artifactLinks = [
+    ["查看产品规格", "product-spec"],
+    ["查看结构方案", "architecture"],
+    ["查看源文件", "source"],
+    ["查看编译结果", "build-result"],
+  ];
+  for (const [name, target] of artifactLinks) {
+    const link = page.getByRole("link", { name });
+    assert.equal(
+      await link.getAttribute("href"),
+      `#${target}`,
+      `${name} should use a stable short target`,
+    );
+    assert.equal(await link.getAttribute("target"), "_blank");
+  }
+
+  const popupPromise = page.context().waitForEvent("page");
+  await page.getByRole("link", { name: "查看产品规格" }).click();
+  const artifactPage = await popupPromise;
+  await artifactPage
+    .locator('[data-artifact-target="product-spec"]')
+    .waitFor();
+  assert.equal(
+    artifactPage.url(),
+    `${baseURL}/project/${projectId}#product-spec`,
+  );
+  assert.ok(!artifactPage.url().includes("Product%20Spec"));
+  await artifactPage
+    .getByText("中文 空格", { exact: false })
+    .waitFor();
+  await artifactPage.reload();
+  await artifactPage
+    .locator('[data-artifact-target="product-spec"]')
+    .waitFor();
+  assert.equal(artifactPage.url().split("#")[1], "product-spec");
+  await mkdir("test-results", { recursive: true });
+  await artifactPage.screenshot({
+    path: "test-results/artifact-product-spec.png",
+    fullPage: true,
+  });
+  await artifactPage.close();
+
+  const copiedLinkPagePromise = page.context().waitForEvent("page");
+  await page.evaluate(
+    (url) => window.open(url, "_blank", "noopener"),
+    `${baseURL}/project/${projectId}#product-spec`,
+  );
+  const copiedLinkPage = await copiedLinkPagePromise;
+  for (const [name, target] of artifactLinks) {
+    await copiedLinkPage.goto(`${baseURL}/project/${projectId}#${target}`);
+    await copiedLinkPage.locator(`[data-artifact-target="${target}"]`).waitFor();
+    assert.equal(copiedLinkPage.url().split("#")[1], target, name);
+  }
+  await copiedLinkPage.close();
+
   await page
     .locator('section[data-preview-error-kind="validation_timeout"]')
     .waitFor({ timeout: 12_000 });
@@ -411,7 +505,7 @@ try {
   );
   assert.deepEqual(relevantErrors, []);
   console.log(
-    "workspace e2e passed: validation timeout, initial load, tab roundtrip, rendered iframe with CDN timeout, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, versions, 375px",
+    "workspace e2e passed: four stable artifact links, copied/refreshed/new-tab targets, validation timeout, initial load, tab roundtrip, rendered iframe with CDN timeout, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, versions, 375px",
   );
 } catch (error) {
   console.error(serverOutput);

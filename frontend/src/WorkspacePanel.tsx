@@ -870,8 +870,10 @@ export default function WorkspacePanel({
 
   return (
     <section
+      id="source"
+      data-artifact-target="source"
       aria-labelledby="files-title"
-      className="flex h-full min-h-[620px] flex-col"
+      className="flex h-full min-h-[620px] scroll-mt-24 flex-col target:ring-2 target:ring-inset target:ring-[#1756d8]"
     >
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
         <div>
