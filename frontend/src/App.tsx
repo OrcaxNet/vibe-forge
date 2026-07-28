@@ -957,13 +957,16 @@ function HomePage({
             )}
 
             {projectsState === "ready" && projects.length > 0 && (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div
+                aria-label="最近项目列表"
+                className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2 lg:grid-cols-3"
+              >
                 {projects.slice(0, 6).map((project) => (
                   <button
                     key={project.id}
                     type="button"
                     onClick={() => onOpenProject(project.id)}
-                    className="group min-h-44 rounded-[22px] border border-[#dce2e9] bg-white p-5 text-left shadow-[0_8px_30px_rgba(31,43,63,.05)] transition hover:-translate-y-1 hover:border-[#aebee0] hover:shadow-[0_16px_40px_rgba(31,43,63,.1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#1756d8] motion-reduce:transform-none"
+                    className="group min-h-44 min-w-0 max-w-full rounded-[22px] border border-[#dce2e9] bg-white p-5 text-left shadow-[0_8px_30px_rgba(31,43,63,.05)] transition hover:-translate-y-1 hover:border-[#aebee0] hover:shadow-[0_16px_40px_rgba(31,43,63,.1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#1756d8] motion-reduce:transform-none"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#edf3ff] text-[#1756d8]">
@@ -974,7 +977,7 @@ function HomePage({
                         className="h-5 w-5 text-[#9ba7b7] transition group-hover:translate-x-1 group-hover:text-[#1756d8] motion-reduce:transform-none"
                       />
                     </div>
-                    <h3 className="mt-5 truncate text-base font-black text-[#17243b]">
+                    <h3 className="mt-5 min-w-0 truncate text-base font-black text-[#17243b]">
                       {project.title}
                     </h3>
                     <div className="mt-3 flex items-center justify-between gap-3 text-xs text-[#748196]">
