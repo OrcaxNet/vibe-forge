@@ -14,11 +14,17 @@ export const PROJECT_STATES = contract.states.project.values as readonly string[
 export const RUN_STATES = contract.states.run.values as readonly string[];
 export const VERSION_STATES = contract.states.version.values as readonly string[];
 export const STAGE_NODE_STATES = contract.states.stageNode.values as readonly string[];
+export const WORKFLOW_PROJECT_STATES =
+  contract.states.workflowProject.values as readonly string[];
+export const WORKFLOW_STAGE_STATES =
+  contract.states.workflowStage.values as readonly string[];
 
 export type ProjectStatus = (typeof PROJECT_STATES)[number];
 export type RunStatus = (typeof RUN_STATES)[number];
 export type VersionStatus = (typeof VERSION_STATES)[number];
 export type StageNodeStatus = (typeof STAGE_NODE_STATES)[number];
+export type WorkflowProjectStatus = (typeof WORKFLOW_PROJECT_STATES)[number];
+export type WorkflowStageStatus = (typeof WORKFLOW_STAGE_STATES)[number];
 
 /** The 8 unified SSE event names (PRD-A/B/C §5.2). */
 export const EVENT_NAMES = Object.keys(contract.events.definitions) as readonly string[];

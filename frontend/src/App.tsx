@@ -19,7 +19,7 @@ import {
   type ApiError,
   type RunStatus,
   type Stage,
-  type StageNodeStatus,
+  type WorkflowProjectStatus,
 } from "./contract";
 import type { WorkspaceDetailTab } from "./WorkspacePanel";
 import {
@@ -34,6 +34,15 @@ import {
   safeArtifactHref,
   type ArtifactTarget,
 } from "./artifactNavigation";
+import {
+  emptyWorkflowStages,
+  normalizeWorkflowSnapshot,
+  normalizeWorkflowStages,
+  shouldApplyWorkflowSnapshot,
+  shouldPollWorkflow,
+  type WorkflowSnapshot,
+  type WorkflowStageView,
+} from "./workflowState";
 
 const WorkspacePanel = lazy(() => import("./WorkspacePanel"));
 
@@ -47,15 +56,7 @@ type ProjectSummary = {
   stableVersionId?: string;
 };
 
-type StageView = {
-  stage: Stage;
-  status: StageNodeStatus;
-  artifactRef?: string;
-  artifactType?: string;
-  startedAt?: string;
-  completedAt?: string;
-  integrityIssue?: string;
-};
+type StageView = WorkflowStageView;
 
 type RunView = {
   id: string;
@@ -79,6 +80,7 @@ type ProjectDetail = ProjectSummary & {
   messages: Message[];
   activeRun?: RunView;
   latestRun?: RunView;
+  workflow: WorkflowSnapshot;
 };
 
 type RunCreated = {
@@ -230,59 +232,12 @@ function isStage(value: unknown): value is Stage {
   return typeof value === "string" && STAGES.includes(value);
 }
 
-function normalizeStage(value: unknown, stage: Stage): StageView {
-  const raw = isObject(value) ? value : {};
-  const artifactRef = stringValue(raw.artifactRef) || undefined;
-  const requestedStatus = stringValue(raw.status, "pending");
-  const allowed: StageNodeStatus[] = [
-    "pending",
-    "running",
-    "succeeded",
-    "failed",
-  ];
-  let status = allowed.includes(requestedStatus as StageNodeStatus)
-    ? (requestedStatus as StageNodeStatus)
-    : "pending";
-  let integrityIssue: string | undefined;
-
-  if (status === "succeeded" && !artifactRef) {
-    status = "running";
-    integrityIssue = "服务已报告完成，但尚未提供制品入口。";
-  }
-
-  return {
-    stage,
-    status,
-    artifactRef,
-    artifactType: stringValue(raw.artifactType) || undefined,
-    startedAt: stringValue(raw.startedAt) || undefined,
-    completedAt: stringValue(raw.completedAt) || undefined,
-    integrityIssue,
-  };
-}
-
-function emptyStages(): StageView[] {
-  return STAGES.map((stage) => normalizeStage({}, stage));
-}
-
 function normalizeRun(value: unknown): RunView | undefined {
   if (!isObject(value) || typeof value.id !== "string") return undefined;
   const failure = isObject(value.failure) ? value.failure : {};
   const rawStages = asArray(value.stages);
   const rawArtifacts = asArray(value.stageArtifacts);
-  const stages = STAGES.map((stage) => {
-    const node = rawStages.find(
-      (candidate) => isObject(candidate) && candidate.stage === stage,
-    );
-    const artifact = rawArtifacts.find(
-      (candidate) => isObject(candidate) && candidate.stage === stage,
-    );
-    const merged =
-      isObject(node) && isObject(artifact)
-        ? { ...node, ...artifact }
-        : (node ?? artifact ?? {});
-    return normalizeStage(merged, stage);
-  });
+  const stages = normalizeWorkflowStages(rawStages, rawArtifacts);
 
   return {
     id: value.id,
@@ -336,7 +291,15 @@ function normalizeProjectDetail(value: unknown): ProjectDetail {
       .find((run) => run.status === "queued" || run.status === "running");
   const latestRun =
     normalizeRun(root.latestRun) ?? runs[runs.length - 1];
-  return { ...base, messages, activeRun, latestRun };
+  const workflow = normalizeWorkflowSnapshot(root);
+  if (!workflow) {
+    throw new ApiClientError(500, {
+      code: "INVALID_RESPONSE",
+      message: "服务没有返回可比较的项目状态，请重试。",
+      retryable: true,
+    });
+  }
+  return { ...base, messages, activeRun, latestRun, workflow };
 }
 
 const api = {
@@ -1126,8 +1089,10 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
             >
               {node.status === "succeeded" ? (
                 <AppIcon name="check" className="h-5 w-5" />
-              ) : node.status === "failed" ? (
+              ) : node.status === "failed" || node.status === "cancelled" ? (
                 <span aria-hidden="true">!</span>
+              ) : node.status === "recovering" ? (
+                <AppIcon name="refresh" className="h-4 w-4" />
               ) : (
                 index + 1
               )}
@@ -1162,6 +1127,10 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
                   "正在生成真实制品…"
                 ) : node.status === "failed" ? (
                   "本阶段未完成，可在下方重试。"
+                ) : node.status === "cancelled" ? (
+                  "本阶段已中止，已有结果仍被保留。"
+                ) : node.status === "recovering" ? (
+                  "正在核对阶段记录与稳定制品…"
                 ) : (
                   `等待生成${label.artifact}`
                 )}
@@ -1188,6 +1157,37 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
         );
       })}
     </ol>
+  );
+}
+
+function BuildPulseSkeleton() {
+  return (
+    <div
+      data-testid="build-pulse-skeleton"
+      aria-label="正在加载构建阶段"
+      aria-busy="true"
+      className="mt-6 space-y-4"
+    >
+      {STAGES.map((stage, index) => (
+        <div
+          key={stage}
+          className="grid grid-cols-[42px_minmax(0,1fr)] gap-3"
+        >
+          <span className="h-[42px] w-[42px] animate-pulse rounded-full bg-[#e5e9ef] motion-reduce:animate-none" />
+          <div
+            className="animate-pulse rounded-2xl border border-[#e5e9ef] bg-[#fafbfc] px-4 py-4 motion-reduce:animate-none"
+            style={{ opacity: 1 - index * 0.12 }}
+          >
+            <span className="block h-2.5 w-20 rounded-full bg-[#dfe4eb]" />
+            <span className="mt-3 block h-4 w-32 rounded-full bg-[#e5e9ef]" />
+            <span className="mt-3 block h-3 w-44 max-w-full rounded-full bg-[#edf0f4]" />
+          </div>
+        </div>
+      ))}
+      <p className="sr-only" aria-live="polite">
+        正在恢复服务端保存的构建状态
+      </p>
+    </div>
   );
 }
 
@@ -1238,27 +1238,35 @@ function ArtifactDetail({
   );
 }
 
-function stageNodeClass(status: StageNodeStatus): string {
+function stageNodeClass(status: StageView["status"]): string {
   if (status === "succeeded") return "border-[#1756d8] bg-[#1756d8] text-white";
   if (status === "running")
     return "border-[#e8a23a] bg-[#fff8e9] text-[#a9640b] shadow-[0_0_0_5px_rgba(232,162,58,.13)]";
   if (status === "failed")
     return "border-[#c64747] bg-[#fff1ef] text-[#a63535]";
+  if (status === "cancelled")
+    return "border-[#8e99aa] bg-[#f0f2f5] text-[#596579]";
+  if (status === "recovering")
+    return "border-[#7665d8] bg-[#f2efff] text-[#5a47b8] shadow-[0_0_0_5px_rgba(118,101,216,.12)]";
   return "border-[#ccd4df] bg-white text-[#8a96a8]";
 }
 
-function StageStatus({ status }: { status: StageNodeStatus }) {
-  const labels: Record<StageNodeStatus, string> = {
-    pending: "等待",
+function StageStatus({ status }: { status: StageView["status"] }) {
+  const labels: Record<StageView["status"], string> = {
+    waiting: "等待",
     running: "进行中",
     succeeded: "已完成",
     failed: "失败",
+    cancelled: "已中止",
+    recovering: "恢复中",
   };
-  const classes: Record<StageNodeStatus, string> = {
-    pending: "bg-[#eef1f5] text-[#69768a]",
+  const classes: Record<StageView["status"], string> = {
+    waiting: "bg-[#eef1f5] text-[#69768a]",
     running: "bg-[#fff0cc] text-[#91550d]",
     succeeded: "bg-[#e5f6f0] text-[#167659]",
     failed: "bg-[#ffe9e6] text-[#a63535]",
+    cancelled: "bg-[#e9edf2] text-[#566276]",
+    recovering: "bg-[#eeeaff] text-[#5a47b8]",
   };
   return (
     <span
@@ -1266,6 +1274,48 @@ function StageStatus({ status }: { status: StageNodeStatus }) {
     >
       {labels[status]}
     </span>
+  );
+}
+
+function ProjectWorkspaceSkeleton({
+  onHome,
+  title,
+}: {
+  onHome: () => void;
+  title?: string;
+}) {
+  return (
+    <div className="min-h-screen bg-[#eef1f5] text-[#17243b]">
+      <TopBar
+        onHome={onHome}
+        context={
+          title ? (
+            <p className="truncate text-center text-sm font-bold text-[#3d4a5e]">
+              {title}
+            </p>
+          ) : undefined
+        }
+      />
+      <main
+        className="mx-auto max-w-[1440px] p-0 md:p-4 lg:p-6"
+        aria-busy="true"
+      >
+        <div className="md:grid md:min-h-[calc(100vh-7rem)] md:grid-cols-[minmax(360px,0.82fr)_minmax(440px,1.18fr)] md:gap-4 lg:gap-6">
+          <section className="bg-white px-5 py-6 md:rounded-[24px] md:border md:border-[#dce2ea] sm:px-6">
+            <span className="block h-3 w-24 animate-pulse rounded-full bg-[#dfe4eb] motion-reduce:animate-none" />
+            <span className="mt-4 block h-7 w-56 max-w-full animate-pulse rounded-lg bg-[#e7ebf0] motion-reduce:animate-none" />
+            <BuildPulseSkeleton />
+          </section>
+          <section className="hidden bg-white p-6 md:block md:rounded-[24px] md:border md:border-[#dce2ea]">
+            <span className="block h-10 w-64 animate-pulse rounded-xl bg-[#e7ebf0] motion-reduce:animate-none" />
+            <span className="mt-5 block min-h-[420px] animate-pulse rounded-2xl bg-[#f0f2f5] motion-reduce:animate-none" />
+          </section>
+        </div>
+        <p className="sr-only" aria-live="polite">
+          正在恢复项目、构建阶段与稳定预览
+        </p>
+      </main>
+    </div>
   );
 }
 
@@ -1279,20 +1329,17 @@ function ProjectWorkspace({
   onHome: () => void;
 }) {
   const bootstrapMatches = bootstrap?.project.id === projectId;
-  const [project, setProject] = useState<ProjectDetail | null>(() =>
-    bootstrapMatches
-      ? {
-          ...bootstrap.project,
-          messages: [],
-          activeRun: undefined,
-          latestRun: undefined,
-        }
-      : null,
-  );
+  const [project, setProject] = useState<ProjectDetail | null>(null);
   const [loadingState, setLoadingState] = useState<
     "loading" | "ready" | "error"
-  >(bootstrapMatches ? "ready" : "loading");
+  >("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [hasTrustedSnapshot, setHasTrustedSnapshot] = useState(false);
+  const hasTrustedSnapshotRef = useRef(false);
+  const stateVersionFloorRef = useRef(0);
+  const localWorkflowRevisionRef = useRef(0);
+  const loadRequestRef = useRef(0);
+  const reportedConflictRef = useRef("");
   const [runId, setRunId] = useState<string | undefined>(() =>
     bootstrapMatches ? bootstrap?.run?.runId : undefined,
   );
@@ -1302,7 +1349,10 @@ function ProjectWorkspace({
   const [activeAttemptId, setActiveAttemptId] = useState<string | undefined>(
     () => (bootstrapMatches ? bootstrap?.run?.attemptId : undefined),
   );
-  const [stages, setStages] = useState<StageView[]>(emptyStages);
+  const [workflowStatus, setWorkflowStatus] = useState<
+    WorkflowProjectStatus | undefined
+  >(() => (bootstrapMatches && bootstrap?.run ? "running" : undefined));
+  const [stages, setStages] = useState<StageView[] | null>(null);
   const [prompt, setPrompt] = useState(() =>
     bootstrapMatches && bootstrap?.runError ? bootstrap.prompt : "",
   );
@@ -1347,14 +1397,38 @@ function ProjectWorkspace({
   }, []);
 
   const applyProject = useCallback((detail: ProjectDetail) => {
+    stateVersionFloorRef.current = Math.max(
+      stateVersionFloorRef.current,
+      detail.workflow.stateVersion,
+    );
+    hasTrustedSnapshotRef.current = true;
+    setHasTrustedSnapshot(true);
     setProject(detail);
     setMessages(detail.messages);
+    setWorkflowStatus(detail.workflow.status);
+    setStages(detail.workflow.stages);
+    const conflictReportKey = `${detail.workflow.workflowRunId ?? "none"}:${detail.workflow.stateVersion}:${detail.workflow.consistency.conflictCodes.join(",")}`;
+    if (
+      detail.workflow.status === "recovering" ||
+      !detail.workflow.consistency.ok
+    ) {
+      if (reportedConflictRef.current !== conflictReportKey) {
+        reportedConflictRef.current = conflictReportKey;
+        console.error("workflow_state_conflict", {
+          projectId: detail.id,
+          workflowRunId: detail.workflow.workflowRunId,
+          stateVersion: detail.workflow.stateVersion,
+          conflicts: detail.workflow.consistency.conflictCodes,
+        });
+      }
+    } else {
+      reportedConflictRef.current = "";
+    }
     const currentRun = detail.activeRun ?? detail.latestRun;
     if (currentRun) {
-      setRunId(currentRun.id);
+      setRunId(detail.workflow.workflowRunId ?? currentRun.id);
       setRunStatus(currentRun.status);
       setActiveAttemptId(currentRun.activeAttemptId);
-      setStages(currentRun.stages);
       setRunError(
         currentRun.status === "failed"
           ? new ApiClientError(500, {
@@ -1367,46 +1441,95 @@ function ProjectWorkspace({
           : null,
       );
     } else {
-      setRunStatus("succeeded");
-      setStages(emptyStages());
+      setRunId(detail.workflow.workflowRunId);
+      setRunStatus(
+        detail.workflow.status === "running"
+          ? "running"
+          : detail.workflow.status === "failed"
+            ? "failed"
+            : detail.workflow.status === "cancelled"
+              ? "interrupted"
+              : "succeeded",
+      );
+      setRunError(null);
     }
   }, []);
 
-  const loadProject = useCallback(async () => {
-    setLoadingState("loading");
-    setLoadError(null);
+  const loadProject = useCallback(async (background = false) => {
+    const requestId = ++loadRequestRef.current;
+    const localRevisionAtRequest = localWorkflowRevisionRef.current;
+    if (!background) {
+      setLoadingState("loading");
+      setLoadError(null);
+    }
     try {
       const detail = await api.getProject(projectId);
+      if (
+        !shouldApplyWorkflowSnapshot({
+          versionFloor: stateVersionFloorRef.current,
+          incomingVersion: detail.workflow.stateVersion,
+          localRevisionAtRequest,
+          currentLocalRevision: localWorkflowRevisionRef.current,
+        })
+      ) {
+        if (
+          requestId === loadRequestRef.current &&
+          hasTrustedSnapshotRef.current
+        ) {
+          setLoadingState("ready");
+        }
+        return;
+      }
       applyProject(detail);
-      setLoadingState("ready");
+      if (requestId === loadRequestRef.current) {
+        setLoadError(null);
+        setLoadingState("ready");
+      }
     } catch (error) {
+      if (requestId !== loadRequestRef.current) return;
       setLoadError(error instanceof Error ? error.message : "项目加载失败。");
       setLoadingState("error");
     }
   }, [applyProject, projectId]);
 
   useEffect(() => {
-    // The create response plus SSE are authoritative during the initial
-    // transition. A delayed snapshot here could overwrite newer SSE events.
-    if (bootstrapMatches) return undefined;
     void loadProject();
     return undefined;
-  }, [bootstrapMatches, loadProject]);
+  }, [loadProject]);
 
   const onRunEvent = useCallback(
     (eventName: string, payload: JsonObject) => {
+      localWorkflowRevisionRef.current += 1;
+      if (
+        eventName === "run_started" ||
+        eventName === "stage_started" ||
+        eventName === "stage_artifact" ||
+        eventName === "run_failed" ||
+        eventName === "run_completed"
+      ) {
+        const payloadVersion = Number(payload.stateVersion);
+        stateVersionFloorRef.current =
+          Number.isSafeInteger(payloadVersion) &&
+          payloadVersion > stateVersionFloorRef.current
+            ? payloadVersion
+            : stateVersionFloorRef.current + 1;
+      }
+
       if (eventName === "run_started") {
         setRunStatus("running");
+        setWorkflowStatus("running");
         setRunError(null);
         setActiveAttemptId(stringValue(payload.attemptId) || undefined);
+        setStages((current) => current ?? emptyWorkflowStages());
         return;
       }
 
       if (eventName === "stage_started" && isStage(payload.stage)) {
         const activeStage = payload.stage;
         setRunStatus("running");
+        setWorkflowStatus("running");
         setStages((current) =>
-          current.map((node, index) => {
+          (current ?? emptyWorkflowStages()).map((node, index) => {
             const activeIndex = STAGES.indexOf(activeStage);
             if (node.stage === activeStage) {
               return {
@@ -1431,10 +1554,11 @@ function ProjectWorkspace({
       if (eventName === "stage_artifact" && isStage(payload.stage)) {
         const artifactStage = payload.stage;
         setStages((current) =>
-          current.map((node) =>
+          (current ?? emptyWorkflowStages()).map((node) =>
             node.stage === artifactStage
               ? {
                   ...node,
+                  status: "succeeded",
                   artifactRef:
                     stringValue(payload.artifactRef) || node.artifactRef,
                   artifactType:
@@ -1489,6 +1613,7 @@ function ProjectWorkspace({
       if (eventName === "run_failed") {
         const failedStage = isStage(payload.stage) ? payload.stage : undefined;
         setRunStatus("failed");
+        setWorkflowStatus("failed");
         setActiveAttemptId(stringValue(payload.attemptId) || activeAttemptId);
         setRunError(
           new ApiClientError(500, {
@@ -1499,7 +1624,7 @@ function ProjectWorkspace({
         );
         if (failedStage) {
           setStages((current) =>
-            current.map((node) =>
+            (current ?? emptyWorkflowStages()).map((node) =>
               node.stage === failedStage ? { ...node, status: "failed" } : node,
             ),
           );
@@ -1509,9 +1634,10 @@ function ProjectWorkspace({
 
       if (eventName === "run_completed") {
         setRunStatus("succeeded");
+        setWorkflowStatus("completed");
         setRunError(null);
-        setStages((current) =>
-          current.map((node) =>
+        setStages((current) => {
+          const next = (current ?? emptyWorkflowStages()).map((node) =>
             node.artifactRef
               ? {
                   ...node,
@@ -1521,11 +1647,19 @@ function ProjectWorkspace({
                 }
               : {
                   ...node,
-                  status: node.status === "failed" ? "failed" : "running",
+                  status: node.status === "failed" ? "failed" : "recovering",
                   integrityIssue: "服务已报告完成，但尚未提供制品入口。",
                 },
-          ),
-        );
+          );
+          if (
+            next.some(
+              (stage) => !stage.artifactRef && stage.status !== "failed",
+            )
+          ) {
+            setWorkflowStatus("recovering");
+          }
+          return next;
+        });
         const versionId = stringValue(payload.versionId);
         if (versionId)
           setProject((current) =>
@@ -1568,8 +1702,11 @@ function ProjectWorkspace({
       setRunId(created.runId);
       setActiveAttemptId(created.attemptId);
       setRunStatus("running");
+      setWorkflowStatus("running");
       setRunError(null);
-      setStages(emptyStages());
+      localWorkflowRevisionRef.current += 1;
+      stateVersionFloorRef.current += 1;
+      setStages(emptyWorkflowStages());
       setMessages((current) => [
         ...current,
         { id: `message-${Date.now()}`, role: "user", content: cleanPrompt },
@@ -1602,10 +1739,13 @@ function ProjectWorkspace({
       const attemptId = await api.retryRun(runId, activeAttemptId);
       setActiveAttemptId(attemptId);
       setRunStatus("running");
+      setWorkflowStatus("running");
       setRunError(null);
+      localWorkflowRevisionRef.current += 1;
+      stateVersionFloorRef.current += 1;
       setStages((current) =>
-        current.map((node) =>
-          node.status === "failed" ? { ...node, status: "pending" } : node,
+        (current ?? emptyWorkflowStages()).map((node) =>
+          node.status === "failed" ? { ...node, status: "waiting" } : node,
         ),
       );
     } catch (error) {
@@ -1619,27 +1759,27 @@ function ProjectWorkspace({
   };
 
   const active = runStatus === "running" || runStatus === "queued";
+  const recovering = workflowStatus === "recovering";
+  const workspaceLocked = active || recovering;
 
-  if (loadingState === "loading" && !project) {
+  useEffect(() => {
+    if (!shouldPollWorkflow(workflowStatus)) return undefined;
+    const poll = window.setInterval(() => {
+      void loadProject(true);
+    }, 4_000);
+    return () => window.clearInterval(poll);
+  }, [loadProject, workflowStatus]);
+
+  if (loadingState === "loading" && !hasTrustedSnapshot && !bootstrapMatches) {
     return (
-      <div className="min-h-screen bg-[#f7f8fb]">
-        <TopBar onHome={onHome} />
-        <main
-          className="grid min-h-[calc(100vh-4rem)] place-items-center px-4"
-          aria-live="polite"
-        >
-          <div className="text-center">
-            <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-[#ccd5e2] border-t-[#1756d8] motion-reduce:animate-none" />
-            <p className="mt-4 text-sm font-bold text-[#5f6c80]">
-              正在恢复项目状态…
-            </p>
-          </div>
-        </main>
-      </div>
+      <ProjectWorkspaceSkeleton
+        onHome={onHome}
+        title={bootstrap?.project.title}
+      />
     );
   }
 
-  if (loadingState === "error" && !project) {
+  if (loadingState === "error" && !hasTrustedSnapshot) {
     return (
       <div className="min-h-screen bg-[#f7f8fb]">
         <TopBar onHome={onHome} />
@@ -1686,7 +1826,9 @@ function ProjectWorkspace({
         context={
           <div className="mx-auto flex max-w-xl items-center justify-center gap-2 truncate px-2 text-center text-sm font-bold text-[#3d4a5e]">
             <span className="hidden text-[#a1aab7] sm:inline">/</span>
-            <span className="truncate">{project?.title ?? "未命名项目"}</span>
+            <span className="truncate">
+              {project?.title ?? bootstrap?.project.title ?? "未命名项目"}
+            </span>
             <span className="hidden items-center gap-1 text-xs font-semibold text-[#6d7a8d] sm:inline-flex">
               <AppIcon name="check" className="h-3.5 w-3.5 text-[#1f9d78]" />
               已保存
@@ -1764,7 +1906,68 @@ function ProjectWorkspace({
                 </div>
               )}
 
-              <BuildPulse stages={stages} />
+              {recovering && (
+                <div
+                  role="status"
+                  data-testid="workflow-recovering"
+                  className="mb-6 overflow-hidden rounded-2xl border border-[#cfc7ff] bg-[#f5f2ff]"
+                >
+                  <div className="flex gap-3 p-4">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#e4deff] text-[#5a47b8]">
+                      <AppIcon name="refresh" className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-black text-[#49399a]">
+                        正在核对构建记录
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-[#665c91]">
+                        稳定预览与阶段记录暂未完全一致。当前结果会保留，核对完成前不会展示矛盾状态。
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 border-t border-[#ded8ff] bg-white/55 px-4 py-2.5">
+                    <span className="font-mono text-[11px] font-bold text-[#766b9a]">
+                      STATE v{project?.workflow.stateVersion ?? "—"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void loadProject()}
+                      className="rounded-lg px-2.5 py-1.5 text-xs font-black text-[#5a47b8] hover:bg-[#e9e4ff] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7665d8]"
+                    >
+                      重新核对
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {loadingState === "error" && hasTrustedSnapshot && (
+                <div
+                  role="alert"
+                  data-testid="workflow-stale-cache"
+                  className="mb-6 rounded-2xl border border-[#efd19b] bg-[#fff8e9] p-4"
+                >
+                  <p className="font-bold text-[#87500d]">
+                    状态刷新失败，已保留上次验证结果。
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-[#7c6544]">
+                    {loadError} 页面没有改写任何阶段；网络恢复后可重新获取。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void loadProject()}
+                    className={`${BUTTON_SECONDARY} mt-3`}
+                  >
+                    <AppIcon name="refresh" className="h-4 w-4" />
+                    重新获取状态
+                  </button>
+                </div>
+              )}
+
+              {stages ? (
+                <BuildPulse stages={stages} />
+              ) : (
+                <BuildPulseSkeleton />
+              )}
 
               {connection === "stale" && active && (
                 <div
@@ -1832,12 +2035,14 @@ function ProjectWorkspace({
                 }}
                 onSubmit={() => void submitIteration()}
                 submitting={submitting}
-                disabled={active}
+                disabled={workspaceLocked}
                 variant="workspace"
                 error={composerError}
                 disabledReason={
                   active
                     ? "当前任务正在构建中，完成或失败后可以继续修改。"
+                    : recovering
+                      ? "构建记录正在核对，完成后可以继续修改。"
                     : undefined
                 }
               />
@@ -1882,7 +2087,10 @@ function ProjectWorkspace({
                 <WorkspacePanel
                   tab={tab === "build" ? desktopTab : tab}
                   projectId={projectId}
-                  stableVersionId={project?.stableVersionId}
+                  stableVersionId={
+                    project?.stableVersionId ??
+                    bootstrap?.project.stableVersionId
+                  }
                   activeRun={active}
                   revision={workspaceRevision}
                   api={api}
