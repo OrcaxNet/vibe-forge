@@ -24,14 +24,15 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 recorded migration, got %d", n)
+	if n != 2 {
+		t.Fatalf("expected 2 recorded migrations, got %d", n)
 	}
 
 	// Core tables from the contract models exist.
 	for _, table := range []string{
 		"projects", "messages", "runs", "attempts", "stage_artifacts",
 		"iterations", "versions", "files", "events", "idempotency_records",
+		"project_workflow_states", "workflow_stage_runs", "workflow_state_conflicts",
 	} {
 		var name string
 		err := db.QueryRow(

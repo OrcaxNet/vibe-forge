@@ -82,8 +82,8 @@ func TestMigrationIdempotentOnFileDB(t *testing.T) {
 	}
 	var n int
 	d.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n)
-	if n != 1 {
-		t.Errorf("expected 1 recorded migration, got %d", n)
+	if n != 2 {
+		t.Errorf("expected 2 recorded migrations, got %d", n)
 	}
 	var c int
 	d.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&c)

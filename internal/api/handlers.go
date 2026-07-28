@@ -62,6 +62,10 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err)
 		return
 	}
+	if !d.Consistency.OK {
+		s.logf("workflow_state_conflict project_id=%s workflow_run_id=%v state_version=%d conflicts=%v",
+			d.ID, d.WorkflowRunID, d.StateVersion, d.Consistency.ConflictCodes)
+	}
 	writeJSON(w, http.StatusOK, d)
 }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://vibe-forge.dev/contract/v1",
   "name": "vibe-forge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Vibe Forge shared contract. Single source of truth for state enums, REST paths, SSE events, idempotency and error structure. Frozen from PRD-A/B/C v1.0 section 5. Both the Go backend and the React frontend MUST consume this file directly (backend via go:embed, frontend via JSON import) so the two cannot drift.",
   "source": ["PRD-A v1.0 §5", "PRD-B v1.0 §5", "PRD-C v1.0 §5"],
   "stages": {
@@ -30,6 +30,16 @@
       "type": "string",
       "values": ["pending", "running", "succeeded", "failed"],
       "note": "Per-node Build Pulse state. A node may only become succeeded when its artifactRef is present."
+    },
+    "workflowProject": {
+      "type": "string",
+      "values": ["draft", "running", "completed", "failed", "cancelled", "recovering"],
+      "note": "Durable project workflow status returned by getProject.workflowStatus."
+    },
+    "workflowStage": {
+      "type": "string",
+      "values": ["waiting", "running", "succeeded", "failed", "cancelled", "recovering"],
+      "note": "Durable stage snapshot status. waiting is valid only when no execution evidence exists."
     }
   },
   "artifactTypes": {
@@ -96,7 +106,20 @@
     "getProject": {
       "method": "GET",
       "path": "/api/projects/:id",
-      "success": { "status": 200, "body": "ProjectDetail" },
+      "success": {
+        "status": 200,
+        "body": "ProjectDetail",
+        "workflowSnapshot": {
+          "workflowStatus": "WorkflowProjectStatus",
+          "workflowRunId": "uuid?",
+          "stateVersion": "monotonic int64",
+          "stateUpdatedAt": "timestamp",
+          "responseUpdatedAt": "timestamp",
+          "stages": "WorkflowStageState[]",
+          "preview": "{version, workflowRunId}",
+          "consistency": "{ok, conflictCodes[]}"
+        }
+      },
       "errors": { "404": "NOT_FOUND (must not leak other projects)" }
     },
     "createRun": {
@@ -225,6 +248,7 @@
     "Run": { "id": "uuid", "projectId": "uuid", "status": "RunStatus", "prompt": "string", "baseVersionId": "uuid?", "activeAttemptId": "uuid?", "createdAt": "timestamp", "updatedAt": "timestamp" },
     "Attempt": { "id": "uuid", "runId": "uuid", "sequence": "int", "status": "RunStatus", "autoFixRound": "int", "createdAt": "timestamp" },
     "StageArtifact": { "id": "uuid", "runId": "uuid", "attemptId": "uuid", "stage": "Stage", "artifactType": "ArtifactType", "artifactRef": "string", "createdAt": "timestamp" },
+    "WorkflowStageState": { "stageKey": "Stage", "status": "WorkflowStageStatus", "attempt": "int", "attemptId": "uuid?", "startedAt": "timestamp?", "finishedAt": "timestamp?", "updatedAt": "timestamp", "errorCode": "string?" },
     "Iteration": { "id": "uuid", "projectId": "uuid", "runId": "uuid?", "kind": "agent|manual|restore", "baseVersionId": "uuid?", "resultVersionId": "uuid?", "prompt": "string?", "createdAt": "timestamp" },
     "Version": { "id": "uuid", "projectId": "uuid", "iterationId": "uuid", "status": "VersionStatus", "filesHash": "string?", "createdAt": "timestamp" },
     "File": { "id": "uuid", "versionId": "uuid", "path": "string", "content": "string", "readonly": "boolean" },

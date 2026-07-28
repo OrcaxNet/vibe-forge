@@ -21,7 +21,7 @@ drift. Any contract change happens here, once, and is picked up by both.
 
 | Section | Covers | PRD source |
 | --- | --- | --- |
-| `states` | `Project` / `Run` / `Version` / stage-node enums | A §5.3, B §5.3 |
+| `states` | `Project` / `Run` / `Version` / stage-node and durable workflow enums | A §5.3, B §5.3, FLO-72 §5 |
 | `stages` | `pm → architect → engineer → qa` order | A §1.3, A §3.1 |
 | `events` | 8 unified SSE event names + payloads + `Last-Event-ID` replay | A/B/C §5.2 |
 | `paths` | 13 REST endpoints (incl. `GET /api/health`) | A/B/C §5.1 |
@@ -31,6 +31,11 @@ drift. Any contract change happens here, once, and is picked up by both.
 | `concurrency` | single active run, manual/agent mutex, optimistic lock | A-FR-04, B §5.3 |
 | `storage` | SQLite + WAL + foreign_keys, UTC, UUID, migration rules | C §5.3 |
 | `models` | entity field shapes (Project, Run, Version, …) | A/B/C §5 |
+
+`GET /api/projects/:id` additionally returns the FLO-72 durable workflow
+snapshot: `workflowStatus`, `workflowRunId`, monotonic `stateVersion`,
+`stateUpdatedAt`, `responseUpdatedAt`, attempt-aware `stages`, stable
+`preview` provenance, and explicit `consistency` conflicts.
 
 ## Editing the contract
 
