@@ -5,13 +5,15 @@ real, serial agent loop — **PM → Architect → Engineer → QA** — streams
 over SSE, previews the result in **Sandpack**, and persists projects and versions
 in **SQLite**.
 
-[Open the live demo](https://passenger-programmers-enquiry-context.trycloudflare.com)
+[Open the live demo](https://vf.floatflow.com)
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
 · [Inspect the deployed revision](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c)
 
-> The demo is an anonymous, temporary Cloudflare quick tunnel. It remains
-> available while the host, OrbStack, and tunnel are running. A tunnel restart
-> may change the URL; see [Known limitations](#known-limitations-and-next-steps).
+> The anonymous demo uses a Cloudflare named tunnel with the fixed
+> `vf.floatflow.com` hostname and runs on a local OrbStack host. The URL remains
+> stable across tunnel restarts, but the single-host deployment is not a
+> highly available production service; see
+> [Known limitations](#known-limitations-and-next-steps).
 
 ## What you can demo
 
@@ -214,12 +216,13 @@ Completed MVP:
   history and restore
 - SQLite migrations, idempotency, project isolation, restart reconciliation,
   and persistent OrbStack volume
-- Anonymous HTTPS demo and formal 10-prompt release gate with 0 open P0 defects
+- Anonymous HTTPS demo at a fixed hostname and formal 10-prompt release gate
+  with 0 open P0 defects
 
 Explicitly outside the MVP:
 
 - Login, per-user workspaces, quotas, billing, and production-grade rate limits
-- A permanent domain or managed deployment SLA
+- A highly available, multi-host production deployment or managed SLA
 - Multi-file generation, arbitrary dependencies, shell access, and per-project
   containers
 - Independent multi-agent scheduling and collaboration
@@ -232,24 +235,27 @@ Explicitly outside the MVP:
    version, version list, and persisted run terminal state as the source of
    truth. The first follow-up should hydrate the stage nodes from persisted stage
    artifacts.
-2. **Temporary tunnel availability (P1).** The Cloudflare quick tunnel has
-   briefly returned HTTP 530 and its hostname changes when the tunnel is
-   recreated. Refreshing or reconnecting resumes the persisted SSE stream and
-   does not stop backend generation. The second follow-up should move to a named
-   tunnel/custom domain, then add authentication and request limits before
-   broader sharing.
+2. **Single-host availability (P1).** The fixed `vf.floatflow.com` hostname is
+   routed through a Cloudflare named tunnel, but the application, tunnel, and
+   SQLite volume still run on one local OrbStack host. Host restarts, local
+   network outages, or tunnel downtime can temporarily make the demo
+   unavailable. Refreshing or reconnecting after recovery resumes the persisted
+   SSE stream and does not stop an otherwise-running backend generation. The
+   second follow-up should move the stack and data to a managed or redundant
+   environment, then add authentication and request limits before broader
+   sharing.
 3. **Anonymous access.** Anyone with the demo URL can create projects and spend
-   shared model quota. The temporary demo should be stopped when unattended:
+   shared model quota. The self-hosted demo should be stopped when unattended:
 
    ```bash
-   docker stop vibe-forge-tunnel vibe-forge-frontend vibe-forge-backend
+   docker stop vibe-forge-named vibe-forge-frontend vibe-forge-backend
    ```
 
 ## Submission
 
 | Deliverable | Location |
 | --- | --- |
-| Public demo | <https://passenger-programmers-enquiry-context.trycloudflare.com> |
+| Public demo | <https://vf.floatflow.com> |
 | Public source | <https://github.com/OrcaxNet/vibe-forge> |
 | Deployed source revision | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
 | Setup, architecture, smoke, status, and limitations | This README |
