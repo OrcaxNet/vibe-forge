@@ -53,10 +53,12 @@ type LoopConfig struct {
 }
 
 // streamCall is one Claude streaming turn. It accumulates the full message,
-// calls onDelta for each text chunk (so the runner can emit message_delta and
-// keep the watchdog fresh), and returns the accumulated message. Abstracted as a
-// field so tests can inject a fake LLM without hitting the API.
-type streamCall func(ctx context.Context, params anthropic.MessageNewParams, onDelta func(string)) (anthropic.Message, error)
+// calls onDelta for each text chunk (so the runner can emit message_delta), and
+// calls onActivity for every content-progress event (content_block_start /
+// content_block_delta, including tool-use input_json_delta) so the run watchdog
+// stays fresh during a long write_file generation. Abstracted as a field so
+// tests can inject a fake LLM without hitting the API.
+type streamCall func(ctx context.Context, params anthropic.MessageNewParams, onDelta func(string), onActivity func()) (anthropic.Message, error)
 
 // Loop drives agent runs against the store and the Claude API. It is safe to
 // call Run concurrently for different runIDs (each Run builds its own runner).
@@ -67,6 +69,10 @@ type Loop struct {
 	now    func() time.Time
 	logf   func(format string, args ...any)
 	stream streamCall // realStream(client) in prod; fake in tests
+	// watchdogOverride, when > 0, replaces the contract runWatchdogSeconds.
+	// Tests use it to reproduce the Engineer TIMEOUT in milliseconds; zero (prod)
+	// means use contracts.Load().Limits.RunWatchdogSeconds.
+	watchdogOverride time.Duration
 }
 
 // NewLoop constructs a Loop. It returns an error if the store or API key is
@@ -104,23 +110,46 @@ func NewLoop(st *store.Store, cfg LoopConfig) (*Loop, error) {
 }
 
 // realStream returns a streamCall that drives the Claude SDK streaming loop,
-// accumulating the message and forwarding text deltas to onDelta.
+// accumulating the message, forwarding text deltas to onDelta, and signaling
+// content progress (onActivity) for both text and tool-use input deltas so the
+// run watchdog stays fresh during a long write_file generation.
 func realStream(client anthropic.Client) streamCall {
-	return func(ctx context.Context, params anthropic.MessageNewParams, onDelta func(string)) (anthropic.Message, error) {
+	return func(ctx context.Context, params anthropic.MessageNewParams, onDelta func(string), onActivity func()) (anthropic.Message, error) {
 		stream := client.Messages.NewStreaming(ctx, params)
 		defer stream.Close()
 		var msg anthropic.Message
 		for stream.Next() {
-			ev := stream.Current()
-			_ = msg.Accumulate(ev)
-			if ev.Type == "content_block_delta" && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
-				onDelta(ev.Delta.Text)
-			}
+			applyStreamEvent(&msg, stream.Current(), onDelta, onActivity)
 		}
 		if err := stream.Err(); err != nil {
 			return msg, err
 		}
 		return msg, nil
+	}
+}
+
+// applyStreamEvent processes one streaming event: it accumulates the event into
+// msg and dispatches the watchdog/text callbacks. It is extracted from
+// realStream's loop so the watchdog-refresh contract is unit-testable without an
+// HTTP server.
+//
+// Any content progress (a block starting or a delta arriving) calls onActivity,
+// which refreshes the run watchdog. Critically this covers input_json_delta -
+// the events the SDK streams while the model fills a write_file tool_use block -
+// which carry no text_delta. Without this, a large App.tsx generation longer
+// than runWatchdogSeconds (counted from the last text/stage event) tripped the
+// watchdog as a TIMEOUT even though the stream was actively progressing. onDelta
+// stays text-only (it drives the message_delta SSE event).
+func applyStreamEvent(msg *anthropic.Message, ev anthropic.MessageStreamEventUnion, onDelta func(string), onActivity func()) {
+	_ = msg.Accumulate(ev)
+	if ev.Type != "content_block_start" && ev.Type != "content_block_delta" {
+		return
+	}
+	if onActivity != nil {
+		onActivity()
+	}
+	if ev.Type == "content_block_delta" && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" && onDelta != nil {
+		onDelta(ev.Delta.Text)
 	}
 }
 
@@ -166,13 +195,25 @@ func (l *Loop) Run(parent context.Context, runID string) {
 }
 
 // startWatchdog cancels the run (with errWatchdog cause) if no effective SSE
-// event is persisted within RunWatchdogSeconds. Effective events are emitted
-// throughout streaming (message_delta per text chunk), so a healthy long
-// generation keeps the watchdog fresh; a stalled call trips it.
+// event is persisted within the watchdog window. Effective events are emitted
+// throughout streaming - message_delta per text chunk AND an activity tick per
+// content progress event (including tool-use input_json_delta, see
+// applyStreamEvent) - so a healthy long generation keeps the watchdog fresh
+// while a genuinely stalled call (no content for the whole window) trips it.
 func (l *Loop) startWatchdog(ctx context.Context, r *runner, cancel context.CancelCauseFunc) {
 	go func() {
-		wd := time.Duration(contracts.Load().Limits.RunWatchdogSeconds) * time.Second
-		ticker := time.NewTicker(2 * time.Second)
+		wd := l.watchdogDuration()
+		// Tick at ~wd/5 so a stall is noticed within one window. Capped at 2s for
+		// the prod 60s window (unchanged from before); floored at 10ms so a
+		// shortened test watchdog still resolves promptly.
+		tick := wd / 5
+		if tick > 2*time.Second {
+			tick = 2 * time.Second
+		}
+		if tick < 10*time.Millisecond {
+			tick = 10 * time.Millisecond
+		}
+		ticker := time.NewTicker(tick)
 		defer ticker.Stop()
 		for {
 			select {
@@ -189,6 +230,15 @@ func (l *Loop) startWatchdog(ctx context.Context, r *runner, cancel context.Canc
 			}
 		}
 	}()
+}
+
+// watchdogDuration returns the run watchdog window: the test override if set,
+// otherwise the contract runWatchdogSeconds.
+func (l *Loop) watchdogDuration() time.Duration {
+	if l.watchdogOverride > 0 {
+		return l.watchdogOverride
+	}
+	return time.Duration(contracts.Load().Limits.RunWatchdogSeconds) * time.Second
 }
 
 // classifyError maps a Claude/infra error to a contract RunFailureCode. Any
@@ -476,7 +526,7 @@ func (r *runner) stream(ctx context.Context, messages []anthropic.MessageParam, 
 		r.emit(ctx, "message_delta", map[string]any{
 			"runId": r.runID, "text": text, "seq": r.msgSeq,
 		})
-	})
+	}, r.bumpActivity)
 }
 
 // writeFileTool returns the write_file tool definition. The schema forces path
@@ -527,10 +577,18 @@ func (r *runner) emit(ctx context.Context, eventType string, payload map[string]
 		r.l.logf("agent: emit %s failed: %v", eventType, err)
 		return nil
 	}
+	r.bumpActivity()
+	return nil
+}
+
+// bumpActivity refreshes the watchdog clock without persisting an SSE event. It
+// is the keepalive invoked for every content-progress streaming event (text and
+// tool-use input deltas) so an active long generation does not trip the
+// watchdog.
+func (r *runner) bumpActivity() {
 	r.mu.Lock()
 	r.lastEvent = r.l.now()
 	r.mu.Unlock()
-	return nil
 }
 
 // emitBG persists a terminal event with Background context (the run ctx may be
