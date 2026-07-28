@@ -131,7 +131,8 @@
       "path": "/api/projects/:id/files/src/App.tsx",
       "request": { "content": "string", "baseVersionId": "uuid", "idempotencyKey": "string" },
       "success": { "status": 202, "body": "Iteration (manual)" },
-      "errors": { "409": "CONFLICT (active run or baseVersion mismatch)", "422": "VALIDATION_ERROR (path/size)" }
+      "errors": { "409": "CONFLICT (active run or baseVersion mismatch)", "422": "VALIDATION_ERROR (path/size or compile failure)" },
+      "note": "Runs the same compile gate as the agent path: the edit is created as a draft/validating version and only promoted to stable (switching stableVersionId) on a compile pass. On a compile fail the version is marked failed, stableVersionId is unchanged and the previous stable preview stays authoritative; the 422 carries the structured compile errors in details.errors."
     },
     "versionFiles": {
       "method": "GET",

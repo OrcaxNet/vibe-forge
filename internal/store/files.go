@@ -5,13 +5,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+
+	"github.com/OrcaxNet/vibe-forge/internal/compile"
 )
 
 // WriteFile performs a manual edit of the single writable file (/src/App.tsx),
-// creating a manual iteration and atomically committing a new stable version
-// (B-FR / contract §paths.writeFile). It enforces the manual/agent mutex (409 if
-// an active run is in flight) and the baseVersionId optimistic lock. Idempotent
-// on the key. Returns the manual iteration JSON with status 202.
+// creating a manual iteration and running the SAME compile gate as the agent
+// loop (FLO-77, contract §paths.writeFile + §concurrency.stableVersionAtomic).
+//
+// The new version is created as a 'draft' (validating) version first; only a
+// compile pass promotes it to 'stable' and CAS-switches the project's
+// stableVersionId. A compile fail marks the version 'failed' and leaves
+// stableVersionId on the previous stable - so invalid hand-edited code can never
+// become the server-authoritative stable version or replace the working preview.
+//
+// It enforces the manual/agent mutex (409 if an active run is in flight) and the
+// baseVersionId optimistic lock. Idempotent on the key. On a compile pass it
+// returns the manual iteration JSON with status 202; on a compile fail it
+// returns 422 VALIDATION_ERROR carrying the structured compile errors (the
+// failed version is still recorded for history).
 func (s *Store) WriteFile(ctx context.Context, projectID, content, baseVersionID, idempotencyKey string) (status int, body []byte, replayed bool, err error) {
 	res, err := s.runIdempotent(ctx, "writeFile", idempotencyKey, func(tx *sql.Tx) (int, []byte, error) {
 		lim := limits()
@@ -57,6 +69,10 @@ func (s *Store) WriteFile(ctx context.Context, projectID, content, baseVersionID
 		writable := lim.WritableFilePath
 		files = applyOverride(files, writable, content, false)
 
+		// Compile gate (FLO-77): run the same structural compile check as the
+		// agent loop on the hand-edited App.tsx BEFORE touching stableVersionId.
+		compileResult := compile.Validate(content)
+
 		now := s.nowTS()
 		iterID := newID()
 		base := stable.String
@@ -66,26 +82,125 @@ func (s *Store) WriteFile(ctx context.Context, projectID, content, baseVersionID
 			iterID, projectID, base, now); err != nil {
 			return 0, nil, fmt.Errorf("insert manual iteration: %w", err)
 		}
-		v, err := s.commitVersionSteps(ctx, tx, CommitInput{
-			ProjectID: projectID, IterationID: iterID, Files: files,
-		}, failNone)
-		if err != nil {
-			return 0, nil, err
+		// Create the new version as a 'draft' (validating) version first
+		// (acceptance 1: same lifecycle as the agent path).
+		hash := filesHash(files)
+		vID := newID()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO versions(id, project_id, iteration_id, status, files_hash, created_at)
+			 VALUES(?, ?, ?, 'draft', ?, ?)`,
+			vID, projectID, iterID, sql.NullString{String: hash, Valid: true}, now); err != nil {
+			return 0, nil, fmt.Errorf("insert manual version: %w", err)
 		}
-		iter := Iteration{
-			ID: iterID, ProjectID: projectID, Kind: "manual",
-			BaseVersionID: &base, ResultVersionID: &v.ID, CreatedAt: now,
+		for _, f := range files {
+			ro := 1
+			if !f.Readonly {
+				ro = 0
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO files(id, version_id, path, content, readonly) VALUES(?, ?, ?, ?, ?)`,
+				newID(), vID, f.Path, f.Content, ro); err != nil {
+				return 0, nil, fmt.Errorf("insert manual file %q: %w", f.Path, err)
+			}
 		}
-		out, err := json.Marshal(iter)
-		if err != nil {
-			return 0, nil, fmt.Errorf("marshal iteration: %w", err)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE iterations SET result_version_id = ? WHERE id = ?`, vID, iterID); err != nil {
+			return 0, nil, fmt.Errorf("set iteration result: %w", err)
 		}
-		return 202, out, nil
+
+		if compileResult.Pass {
+			// Only a successful compile promotes to stable and CAS-switches
+			// stableVersionId (acceptance 2, B-FR-07).
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE versions SET status = 'stable' WHERE id = ?`, vID); err != nil {
+				return 0, nil, fmt.Errorf("promote manual version: %w", err)
+			}
+			casRes, err := tx.ExecContext(ctx,
+				`UPDATE projects SET stable_version_id = ?, updated_at = ?
+				  WHERE id = ? AND COALESCE(stable_version_id, '') = COALESCE(?, '')`,
+				vID, now, projectID, base)
+			if err != nil {
+				return 0, nil, fmt.Errorf("cas stable version: %w", err)
+			}
+			if n, _ := casRes.RowsAffected(); n == 0 {
+				return 0, nil, conflict("baseVersionId no longer matches stable version", nil)
+			}
+			resultVID := vID
+			iter := Iteration{
+				ID: iterID, ProjectID: projectID, Kind: "manual",
+				BaseVersionID: &base, ResultVersionID: &resultVID, CreatedAt: now,
+			}
+			out, err := json.Marshal(iter)
+			if err != nil {
+				return 0, nil, fmt.Errorf("marshal iteration: %w", err)
+			}
+			return 202, out, nil
+		}
+
+		// Compile failed: mark the version 'failed' and DO NOT touch
+		// stableVersionId. The previous stable and its preview stay authoritative
+		// (acceptance 2). The failed version is recorded for history.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE versions SET status = 'failed' WHERE id = ?`, vID); err != nil {
+			return 0, nil, fmt.Errorf("fail manual version: %w", err)
+		}
+		// Return 422 VALIDATION_ERROR with the structured compile errors so the UI
+		// can surface them and offer a correct/retry. The failed version is
+		// committed with this transaction. 422 is intentionally not cached by the
+		// idempotency ledger (contract §idempotency), so a client that fixes the
+		// code and retries re-runs the gate against the new content.
+		errBody, mErr := json.Marshal(contractErrorResponse{
+			Code:      "VALIDATION_ERROR",
+			Message:   formatCompileMessage(compileResult.Errors),
+			Retryable: false,
+			Details: map[string]any{
+				"errors":      compileResult.Errors,
+				"compilePass": false,
+			},
+		})
+		if mErr != nil {
+			return 0, nil, fmt.Errorf("marshal compile error: %w", mErr)
+		}
+		return 422, errBody, nil
 	})
 	if err != nil {
 		return 0, nil, false, err
 	}
 	return res.status, res.body, res.replayed, nil
+}
+
+// contractErrorResponse mirrors the API error shape (code/message/retryable/
+// details) so a store method that must commit a transaction AND return a non-2xx
+// response - a manual edit that records a failed version then rejects the save
+// with the compile errors - can hand the handler a pre-serialized body to write
+// verbatim. It is the store-side equivalent of api.APIError / writeStoreErr.
+type contractErrorResponse struct {
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	Retryable bool           `json:"retryable"`
+	Details   map[string]any `json:"details,omitempty"`
+}
+
+// formatCompileMessage turns a compile gate's structured errors into one
+// human-displayable, sanitized line for the 422 message field (no keys/stacks -
+// C-NFR-03). It lists at most the first few errors.
+func formatCompileMessage(errs []compile.Error) string {
+	if len(errs) == 0 {
+		return "App.tsx 编译失败，请修正后重试。"
+	}
+	const max = 3
+	out := "App.tsx 编译失败："
+	for i, e := range errs {
+		if i >= max {
+			out += fmt.Sprintf("（另 %d 处错误）", len(errs)-max)
+			break
+		}
+		if i > 0 {
+			out += "；"
+		}
+		out += fmt.Sprintf("第 %d 行 %s", e.Line, e.Message)
+	}
+	return out
 }
 
 // FileTree is the listFiles response: the stable version's file tree with
