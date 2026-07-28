@@ -7,7 +7,7 @@ in **SQLite**.
 
 [Open the live demo](https://vf.floatflow.com)
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
-· [Inspect the deployed revision](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6)
+· [Inspect the deployed revision](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36)
 
 > The anonymous demo uses a Cloudflare named tunnel with the fixed
 > `vf.floatflow.com` hostname and runs on a local OrbStack host. The URL remains
@@ -32,7 +32,7 @@ successfully. Every run produced four ordered stage artifacts, `file_written`,
 took 141.9 seconds, so allow roughly 1.5–2.5 minutes for a full generation.
 This SHA is a test baseline, not the current deployment; the frontend and
 backend are now both deployed from
-`27138028076c85f742b76bf2dc60bdd0e32536d6`.
+`1353d82424b304c6fc2cd55d6c4336ee9e718e36`.
 
 ## Architecture
 
@@ -198,8 +198,8 @@ The live frontend and backend were deployed together from one revision:
 
 | Component | Deployed Git revision |
 | --- | --- |
-| Frontend | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
-| Backend | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
+| Frontend | [`1353d82424b304c6fc2cd55d6c4336ee9e718e36`](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36) |
+| Backend | [`1353d82424b304c6fc2cd55d6c4336ee9e718e36`](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36) |
 
 The public [`/build-info.json`](https://vf.floatflow.com/build-info.json) is the
 authoritative frontend artifact check. It contains the injected Git revision, a
@@ -267,21 +267,22 @@ Explicitly outside the MVP:
 
 ## Known limitations and next steps
 
-1. **Historical Build Pulse hydration (P1).** After refreshing a successful
-   project, its stable preview, versions, and persisted successful run are
-   correct, but the four Build Pulse nodes may display “waiting.” Use the stable
-   version, version list, and persisted run terminal state as the source of
-   truth. The first follow-up should hydrate the stage nodes from persisted stage
-   artifacts.
-2. **Single-host availability (P1).** The fixed `vf.floatflow.com` hostname is
+1. **Single-host availability (P1).** The fixed `vf.floatflow.com` hostname is
    routed through a Cloudflare named tunnel, but the application, tunnel, and
    SQLite volume still run on one local OrbStack host. Host restarts, local
    network outages, or tunnel downtime can temporarily make the demo
    unavailable. Refreshing or reconnecting after recovery resumes the persisted
    SSE stream and does not stop an otherwise-running backend generation. The
-   second follow-up should move the stack and data to a managed or redundant
-   environment, then add authentication and request limits before broader
-   sharing.
+   availability follow-up should move the stack and data to a managed or
+   redundant environment, then add authentication and request limits before
+   broader sharing.
+2. **Sandpack first-load timeout (P1).** In some fresh browser sessions, the
+   stable preview can exceed its initial 10-second resource-ready window even
+   though the stable version and project data remain intact. If the timeout
+   appears, select **仅重试预览** (retry preview only); the preview normally becomes
+   interactive without regenerating the app. The follow-up should capture CDN,
+   iframe-handshake, and application timing across fresh sessions, then tune the
+   loading state, timeout, or retry policy from that evidence.
 3. **Anonymous access.** Anyone with the demo URL can create projects and spend
    shared model quota. The self-hosted demo should be stopped when unattended:
 
@@ -295,8 +296,8 @@ Explicitly outside the MVP:
 | --- | --- |
 | Public demo | <https://vf.floatflow.com> |
 | Public source | <https://github.com/OrcaxNet/vibe-forge> |
-| Deployed frontend revision | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
-| Deployed backend revision | [`27138028076c85f742b76bf2dc60bdd0e32536d6`](https://github.com/OrcaxNet/vibe-forge/commit/27138028076c85f742b76bf2dc60bdd0e32536d6) |
+| Deployed frontend revision | [`1353d82424b304c6fc2cd55d6c4336ee9e718e36`](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36) |
+| Deployed backend revision | [`1353d82424b304c6fc2cd55d6c4336ee9e718e36`](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36) |
 | Setup, architecture, smoke, status, and limitations | This README |
 
 The project is released under the [MIT License](./LICENSE). Direct dependency
