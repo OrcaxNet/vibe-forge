@@ -7,7 +7,8 @@ in **SQLite**.
 
 [Open the live demo](https://vf.floatflow.com)
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
-· [Inspect the deployed revision](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c)
+· [Inspect the deployed frontend revision](https://github.com/OrcaxNet/vibe-forge/commit/a7ee221db8121fff1007f9bebd26ff0e6c58b51e)
+· [Inspect the deployed backend revision](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c)
 
 > The anonymous demo uses a Cloudflare named tunnel with the fixed
 > `vf.floatflow.com` hostname and runs on a local OrbStack host. The URL remains
@@ -25,11 +26,14 @@ in **SQLite**.
 5. Request a natural-language change without losing the previous stable version.
 6. Refresh or restart the backend and recover the project from SQLite.
 
-The formal release gate on `main` `ccb172608ebab7eb05294ad9c178d556fb8a795c`
-completed 10/10 fixed prompts successfully. Every run produced four ordered
-stage artifacts, `file_written`, `preview_ready`, `run_completed`, and a matching
-stable version. The longest run took 141.9 seconds, so allow roughly 1.5–2.5
-minutes for a full generation.
+The formal 10-prompt release gate ran against
+`ccb172608ebab7eb05294ad9c178d556fb8a795c` and completed 10/10 fixed prompts
+successfully. Every run produced four ordered stage artifacts, `file_written`,
+`preview_ready`, `run_completed`, and a matching stable version. The longest run
+took 141.9 seconds, so allow roughly 1.5–2.5 minutes for a full generation.
+Frontend-only fixes through
+`a7ee221db8121fff1007f9bebd26ff0e6c58b51e` are deployed on top of that backend
+baseline.
 
 ## Architecture
 
@@ -153,6 +157,7 @@ All local values belong in `.env`; `.env.example` contains safe placeholders.
 | `ANTHROPIC_MODEL` | No | `claude-sonnet-5` | Model identifier expected by the selected provider |
 | `BACKEND_PORT` | No | `8787` | Backend host port |
 | `FRONTEND_PORT` | No | `5173` | Frontend host port |
+| `BUILD_REVISION` | No | `local` | Git SHA embedded in the frontend build manifest |
 | `DATABASE_PATH` | No | `/data/vibe-forge.db` | SQLite path inside the backend container |
 
 Credentials are injected only into the backend container. The frontend bundle,
@@ -187,6 +192,38 @@ git status --short
 The committed reproducibility files are `go.sum` and
 `frontend/package-lock.json`. Production containers use multi-stage builds; no
 runtime `npm install` occurs.
+
+### Deployment traceability
+
+The live stack currently contains intentionally split revisions because the
+latest fixes were frontend-only:
+
+| Component | Deployed Git revision |
+| --- | --- |
+| Frontend | [`a7ee221db8121fff1007f9bebd26ff0e6c58b51e`](https://github.com/OrcaxNet/vibe-forge/commit/a7ee221db8121fff1007f9bebd26ff0e6c58b51e) |
+| Backend | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
+
+Every frontend image built from this revision exposes `/build-info.json`,
+containing the injected Git revision, a SHA-256 digest over the runtime assets,
+and the individual asset digests. Compose readiness checks the manifest revision
+instead of accepting any responsive nginx process.
+
+Use the release wrapper for a production frontend update:
+
+```bash
+./scripts/deploy-frontend.sh
+```
+
+It first rejects a dirty worktree, then injects the checked-out full Git SHA,
+rebuilds and restarts only the frontend, and repeatedly fetches the public
+manifest and every listed asset until their revision and SHA-256 digests match
+or the deployment fails. Set `PUBLIC_URL` to verify another origin. A read-only
+verification can also be run separately:
+
+```bash
+cd frontend
+npm run verify:deployment -- https://vf.floatflow.com "$(git rev-parse HEAD)"
+```
 
 ## Repository layout
 
@@ -257,7 +294,8 @@ Explicitly outside the MVP:
 | --- | --- |
 | Public demo | <https://vf.floatflow.com> |
 | Public source | <https://github.com/OrcaxNet/vibe-forge> |
-| Deployed source revision | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
+| Deployed frontend revision | [`a7ee221db8121fff1007f9bebd26ff0e6c58b51e`](https://github.com/OrcaxNet/vibe-forge/commit/a7ee221db8121fff1007f9bebd26ff0e6c58b51e) |
+| Deployed backend revision | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
 | Setup, architecture, smoke, status, and limitations | This README |
 
 The project is released under the [MIT License](./LICENSE). Direct dependency
