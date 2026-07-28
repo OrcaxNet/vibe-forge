@@ -28,6 +28,12 @@ import {
   normalizeVersions,
   type ManualIteration,
 } from "./workspace";
+import {
+  artifactTargetForStage,
+  artifactTargetFromHash,
+  safeArtifactHref,
+  type ArtifactTarget,
+} from "./artifactNavigation";
 
 const WorkspacePanel = lazy(() => import("./WorkspacePanel"));
 
@@ -1096,6 +1102,8 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
     <ol aria-label="Build Pulse 构建阶段" className="relative mt-6 space-y-0">
       {stages.map((node, index) => {
         const label = STAGE_LABELS[node.stage];
+        const target = artifactTargetForStage(node.stage);
+        const artifactHref = target ? safeArtifactHref(target) : undefined;
         const isLast = index === stages.length - 1;
         return (
           <li
@@ -1137,9 +1145,9 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
                 className="mt-2 min-h-5 text-sm text-[#667489]"
                 aria-live="polite"
               >
-                {node.artifactRef ? (
+                {node.artifactRef && artifactHref ? (
                   <a
-                    href={node.artifactRef}
+                    href={artifactHref}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 font-bold text-[#1756d8] underline decoration-[#9bb7ee] underline-offset-4 hover:text-[#113f9e] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1756d8]"
@@ -1155,6 +1163,15 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
                   `等待生成${label.artifact}`
                 )}
               </div>
+              {node.artifactRef &&
+                node.stage !== "engineer" &&
+                target && (
+                  <ArtifactDetail
+                    target={target}
+                    label={label.artifact}
+                    node={node}
+                  />
+                )}
               {node.integrityIssue && (
                 <p
                   role="alert"
@@ -1168,6 +1185,53 @@ function BuildPulse({ stages }: { stages: StageView[] }) {
         );
       })}
     </ol>
+  );
+}
+
+function artifactDisplayContent(node: StageView): string {
+  const content = node.artifactRef ?? "";
+  if (node.stage !== "qa") return content;
+  try {
+    return JSON.stringify(JSON.parse(content), null, 2);
+  } catch {
+    return content;
+  }
+}
+
+function ArtifactDetail({
+  target,
+  label,
+  node,
+}: {
+  target: ArtifactTarget;
+  label: string;
+  node: StageView;
+}) {
+  const detailRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (artifactTargetFromHash(window.location.hash) !== target) return;
+    const frame = window.requestAnimationFrame(() =>
+      detailRef.current?.scrollIntoView({ block: "center" }),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [node.artifactRef, target]);
+
+  return (
+    <section
+      ref={detailRef}
+      id={target}
+      data-artifact-target={target}
+      aria-label={`${label}制品内容`}
+      className="mt-3 scroll-mt-24 rounded-xl border border-[#d9e3f5] bg-white p-3 target:border-[#1756d8] target:ring-2 target:ring-[#dbe7ff]"
+    >
+      <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[#6d7a8d]">
+        {label}制品
+      </p>
+      <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-5 text-[#3d4a5e]">
+        {artifactDisplayContent(node)}
+      </pre>
+    </section>
   );
 }
 
@@ -1247,15 +1311,37 @@ function ProjectWorkspace({
   const [runError, setRunError] = useState<ApiClientError | null>(
     bootstrapMatches ? (bootstrap?.runError ?? null) : null,
   );
-  const [tab, setTab] = useState<WorkspaceTab>("build");
+  const initialArtifactTarget = artifactTargetFromHash(window.location.hash);
+  const initialDetailTab =
+    initialArtifactTarget === "source" ? "files" : "preview";
+  const [tab, setTab] = useState<WorkspaceTab>(() =>
+    initialArtifactTarget === "source" ? "files" : "build",
+  );
   const [desktopTab, setDesktopTab] =
-    useState<Exclude<WorkspaceTab, "build">>("preview");
+    useState<Exclude<WorkspaceTab, "build">>(initialDetailTab);
   const [messages, setMessages] = useState<Message[]>(() =>
     bootstrapMatches && bootstrap?.prompt
       ? [{ id: "bootstrap-prompt", role: "user", content: bootstrap.prompt }]
       : [],
   );
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
+
+  useEffect(() => {
+    const syncArtifactTarget = () => {
+      const target = artifactTargetFromHash(window.location.hash);
+      if (!target) return;
+      if (target === "source") {
+        setTab("files");
+        setDesktopTab("files");
+        return;
+      }
+      setTab("build");
+    };
+
+    syncArtifactTarget();
+    window.addEventListener("hashchange", syncArtifactTarget);
+    return () => window.removeEventListener("hashchange", syncArtifactTarget);
+  }, []);
 
   const applyProject = useCallback((detail: ProjectDetail) => {
     setProject(detail);
