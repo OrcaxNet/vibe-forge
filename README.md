@@ -1,176 +1,259 @@
 # Vibe Forge
 
-Turn a one-line idea into a running React app through a **single agent loop**
-of four real, serial stages — `pm → architect → engineer → qa` — observed live
-via SSE, previewed in-browser with **Sandpack**, and persisted to **SQLite** as
-the single source of truth.
+Turn one idea into a running React app. Vibe Forge moves the request through one
+real, serial agent loop — **PM → Architect → Engineer → QA** — streams progress
+over SSE, previews the result in **Sandpack**, and persists projects and versions
+in **SQLite**.
 
-> **Stage 4.** The full local-first loop is wired: workbench UI (FLO-54), SQLite
-> persistence/API (FLO-55), Sandpack preview + file/version workflow (FLO-56),
-> the single agent loop + SSE + auto-repair (FLO-60), and OrbStack local
-> integration + restart recovery (FLO-59). A fresh clone is usable on OrbStack
-> with one command; a run interrupted by a restart is reconciled to
-> `interrupted` and retried with a new attempt. Online deploy (FLO-57) and the
-> final submission pack (FLO-62) are the remaining stages.
+[Open the live demo](https://passenger-programmers-enquiry-context.trycloudflare.com)
+· [View the public repository](https://github.com/OrcaxNet/vibe-forge)
+· [Inspect the deployed revision](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c)
 
-## Architecture (main path)
+> The demo is an anonymous, temporary Cloudflare quick tunnel. It remains
+> available while the host, OrbStack, and tunnel are running. A tunnel restart
+> may change the URL; see [Known limitations](#known-limitations-and-next-steps).
 
-- **Frontend** — React + TypeScript + Vite + Tailwind. The workbench includes
-  home, Build Pulse, preview, files and versions. `/src/App.tsx` is the only
-  manually writable generated file; active agent runs lock manual saving.
-- **Backend** — Go monolith. Serves `/api/health` and the persistence-layer REST
-  API (projects, runs, versions, files) backed by the SQLite store; the agent-loop
-  endpoints (SSE, retry, compile-result) land in FLO-60.
-- **Preview** — **Sandpack** (in-browser) is the only MVP preview path. The
-  frontend verifies the server `filesHash`, compiles a candidate in a sandboxed
-  iframe, and keeps the previous interactive preview mounted until the candidate
-  is ready. No per-project Docker/Vite preview containers or traefik.
-- **Persistence** — **SQLite** on a declared volume is the only source of truth.
-  No IndexedDB.
-- **Contract** — `contracts/contract.json` is the single source of truth for
-  state enums, REST paths, SSE events, idempotency and error structure. The Go
-  backend embeds it (`//go:embed`); the React frontend imports it directly. They
-  cannot drift.
+## What you can demo
 
-## Quick start (OrbStack / Docker, local-first)
+1. Describe an app on the home page or select an example prompt.
+2. Watch the server-driven Build Pulse advance through PM, Architect, Engineer,
+   and QA.
+3. Use the generated app in the sandboxed Sandpack preview.
+4. Inspect `/src/App.tsx`, versions, and stage artifacts.
+5. Request a natural-language change without losing the previous stable version.
+6. Refresh or restart the backend and recover the project from SQLite.
 
-One command brings up the frontend, backend and SQLite volume on OrbStack:
+The formal release gate on `main` `ccb172608ebab7eb05294ad9c178d556fb8a795c`
+completed 10/10 fixed prompts successfully. Every run produced four ordered
+stage artifacts, `file_written`, `preview_ready`, `run_completed`, and a matching
+stable version. The longest run took 141.9 seconds, so allow roughly 1.5–2.5
+minutes for a full generation.
 
-```bash
-cp .env.example .env        # then edit .env and set model credentials
-docker compose up --build
+## Architecture
+
+```text
+Browser
+  ├─ React workbench ── REST + persisted SSE ── Go monolith
+  └─ sandboxed Sandpack preview                    ├─ single agent loop
+                                                    └─ SQLite volume
 ```
 
-- Frontend: http://localhost:5173
-- Backend health: http://localhost:8787/api/health
+- **Frontend:** React, TypeScript, Vite, and Tailwind. The workbench contains the
+  home page, Build Pulse, preview, file editor, and version history.
+- **Agent loop:** one conversation progresses strictly through PM → Architect →
+  Engineer → QA. Each successful stage has a queryable artifact. QA performs the
+  compile gate and can send a failure back to Engineer for at most two repairs.
+- **Preview:** Sandpack is the only MVP preview path. A candidate version is
+  compiled in a sandboxed iframe; the last stable preview stays mounted until
+  `preview_ready`.
+- **Persistence:** SQLite in a named Docker volume is the only source of truth.
+  Projects, messages, runs, attempts, events, artifacts, files, and versions are
+  server-persisted. There is no IndexedDB persistence.
+- **Contract:** `contracts/contract.json` defines states, REST paths, SSE events,
+  idempotency, limits, and stable errors. Go embeds it and the frontend imports
+  it directly.
 
-A fresh clone is usable within a couple of minutes once base images are cached
-(`--build` compiles the Go binary and Vite assets). The first build pulls the
-`golang`, `node` and `nginx` base images; subsequent builds are fast.
+Deliberate MVP choices:
 
-The agent loop needs model credentials - pick **one** auth mode in `.env`:
+- One agent loop keeps context and recovery behavior observable; this is not four
+  independently scheduled agents.
+- Only generated `/src/App.tsx` is writable. The React/Tailwind scaffold is
+  fixed, with no shell access, path traversal, or runtime package installation.
+- Sandpack avoids per-project preview containers, and SQLite keeps local-first
+  recovery simple. There is no Traefik or per-project Vite/Docker runtime.
 
-- **Mode A (default):** `ANTHROPIC_API_KEY=sk-...` (direct Anthropic API).
-- **Mode B (gateway):** `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL` for an
-  Anthropic-compatible platform proxy (also set `ANTHROPIC_MODEL` to the name
-  your gateway expects).
+## Cold start on OrbStack
 
-Until credentials are set, `/api/health` returns `503` with a
-structurally-correct, sanitized body (`database: ok`, `model: not_configured`)
-and the backend logs an actionable warning naming the exact variables to set.
-Run creation is rejected until the model is configured; the rest of the API
-(projects, versions, files) still serves.
+### Prerequisites
 
-> ⚠️ `docker compose down -v` **deletes the SQLite volume and all project
-> data.** Use `docker compose down` (without `-v`) to keep data across restarts.
-> `docker compose restart` and `down`/`up` (no `-v`) both preserve the volume;
-> see [Restart recovery](#restart-recovery) below.
+- macOS with [OrbStack](https://orbstack.dev/) running, or Docker Engine with
+  Compose v2
+- Git
+- Model credentials for one of the modes below
 
-## Restart recovery
+The container build supplies Go and Node; host installations are needed only for
+running the developer test commands.
 
-SQLite on the mounted volume is the single source of truth, so a restart never
-loses committed data. A run that is mid-flight (`queued`/`running`) when the
-backend stops is reconciled on the next startup:
+```bash
+git clone https://github.com/OrcaxNet/vibe-forge.git
+cd vibe-forge
+cp .env.example .env
+```
 
-- On boot the backend flips every `queued`/`running` run to `interrupted`
-  (`reconciled N interrupted run(s)` log line) and releases the per-project
-  active-run lock. It never resumes a run as if it never stopped - an
-  interrupted run is surfaced to the client as a retryable `run_failed` over
-  SSE.
-- `POST /api/runs/:id/retry` starts a **new attempt** (retry never fakes
-  "continue"); it is idempotent on `Idempotency-Key`, so a repeated retry does
-  not create a second attempt.
-- `docker compose restart` and `down`/`up` (without `-v`) both preserve
-  projects, messages, stage artifacts, files and `stableVersionId`; terminal
-  runs (`succeeded`/`failed`/`interrupted`) are never resurrected.
+Edit `.env` and configure exactly one model authentication mode:
+
+| Mode | Required values | Use when |
+| --- | --- | --- |
+| Direct Anthropic | `ANTHROPIC_API_KEY` | Calling the Anthropic API directly |
+| Compatible gateway | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, and the gateway's `ANTHROPIC_MODEL` | Calling a bearer-token Anthropic-compatible gateway |
+
+Never commit `.env`; it is ignored by Git. Start the stack:
+
+```bash
+docker compose up --build -d
+docker compose ps
+curl -i http://127.0.0.1:8787/api/health
+```
+
+Open <http://localhost:5173>. A ready installation returns HTTP 200 with
+`database.status: "ok"` and `model.status: "configured"`.
+
+If credentials are absent or incomplete, the backend still starts so that its
+health and persistence surfaces can be inspected, but `/api/health` returns 503
+with `model.status: "not_configured"` and new agent runs are rejected. Fix
+`.env`, then apply it with:
+
+```bash
+docker compose up -d --force-recreate backend
+```
+
+The first build downloads the Go, Node, Alpine, and nginx base images. Subsequent
+builds reuse their caches. Host ports default to `5173` and `8787`; change
+`FRONTEND_PORT` or `BACKEND_PORT` in `.env` if they are occupied.
+
+### Core smoke
+
+1. Confirm `/api/health` is HTTP 200 and both dependencies are ready.
+2. Open the home page and submit: `Build a habit tracker where I can add, check,
+   and delete habits.`
+3. Wait for all four Build Pulse stages and a usable preview.
+4. Add, complete, and delete one habit in the generated app.
+5. Request: `Change the primary color to indigo without removing any features.`
+6. Confirm a second stable version appears, then refresh the page and verify the
+   preview and version history recover.
+
+Useful diagnostics:
+
+```bash
+docker compose logs --tail=100 backend
+docker compose restart backend
+curl -fsS http://127.0.0.1:8787/api/health
+```
+
+`docker compose restart` and `docker compose down` followed by
+`docker compose up -d` preserve the SQLite volume. A run interrupted by a
+restart becomes `interrupted`, releases its active lock, and can be retried as a
+new attempt.
+
+> **Data deletion warning:** `docker compose down -v` deletes the
+> `vibe-forge-db` volume and all projects, messages, files, runs, and versions.
+> Use `docker compose down` without `-v` to stop the stack and keep data.
 
 ## Environment variables
 
-See [`.env.example`](./.env.example). Required (one mode): `ANTHROPIC_API_KEY`,
-or `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`. Optional: `ANTHROPIC_MODEL`,
-`PORT`/`DATABASE_PATH` (overridable via compose). The backend logs an actionable
-warning at startup when no credentials are present.
+All local values belong in `.env`; `.env.example` contains safe placeholders.
 
-## Smoke commands
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `ANTHROPIC_API_KEY` | One auth mode | empty | Direct API authentication |
+| `ANTHROPIC_AUTH_TOKEN` | Gateway mode | empty | Gateway bearer token |
+| `ANTHROPIC_BASE_URL` | Gateway mode | empty | Anthropic-compatible gateway base URL |
+| `ANTHROPIC_MODEL` | No | `claude-sonnet-5` | Model identifier expected by the selected provider |
+| `BACKEND_PORT` | No | `8787` | Backend host port |
+| `FRONTEND_PORT` | No | `5173` | Frontend host port |
+| `DATABASE_PATH` | No | `/data/vibe-forge.db` | SQLite path inside the backend container |
 
-Backend (Go):
+Credentials are injected only into the backend container. The frontend bundle,
+generated app, API errors, and lifecycle logs must never contain a key, token,
+or private upstream URL.
+
+## Developer verification
+
+Backend (Go 1.26):
 
 ```bash
-go test ./...                         # unit tests incl. contract + migration idempotency
-go run ./cmd/server &                 # start on :8787
-curl -s http://127.0.0.1:8787/api/health   # 503 + structured JSON
+go test -race ./...
+go vet ./...
 ```
 
-Frontend (Node):
+Frontend (Node 22 and a local Chrome/Chromium for the browser smoke):
 
 ```bash
 cd frontend
 npm ci
-npm run smoke          # unit tests + tsc typecheck + vite production build
-npm run test:e2e       # mocked-contract Chrome smoke incl. Sandpack + 375px
-npm run dev            # dev server on :5173 (proxies /api to :8787)
+npm run smoke
+npm run test:e2e
 ```
+
+Repository and Compose checks:
+
+```bash
+docker compose config --quiet
+git status --short
+```
+
+The committed reproducibility files are `go.sum` and
+`frontend/package-lock.json`. Production containers use multi-stage builds; no
+runtime `npm install` occurs.
 
 ## Repository layout
 
-```
-contracts/        shared contract (single source of truth) — JSON + Go embed + README
-  contract.json   ← frozen from PRD-A/B/C §5
-  contract.go     ← backend typed accessors (go:embed)
-  contract_test.go
-cmd/server/       backend entrypoint (startup, reconcile, redacting logger)
-internal/api/     HTTP router + persistence REST API + SSE/retry/compile-result
-internal/agent/   single agent loop (PM->Architect->Engineer->QA) + SSE + auto-repair
-internal/db/      SQLite open (WAL, foreign_keys) + idempotent migration runner + 0001_init.sql
-internal/store/   SQLite store: projects, runs, versions, files; idempotency + atomic version commit
-internal/logredact/ secret-scrubbing logger for run-lifecycle lines
-frontend/         React + TS + Vite + Tailwind workbench
-  src/App.tsx     ← home, Build Pulse and workspace orchestration
-  src/WorkspacePanel.tsx ← Sandpack preview, file editor and version history
-  src/workspace.ts ← files-map hashing, normalization and preview guards
-  src/contract.ts ← typed frontend view of contracts/contract.json
-scaffold/         fixed React + Tailwind scaffold for Sandpack (only /src/App.tsx writable)
-compose.yaml      backend + frontend + SQLite volume + healthchecks
-Dockerfile.backend / Dockerfile.frontend   multi-stage, no runtime npm install
-.env.example      required + optional env vars
+```text
+contracts/             shared contract imported by both applications
+cmd/server/            Go entrypoint, startup reconciliation, redacted logging
+internal/api/          REST, SSE replay, retry, and compile-result handlers
+internal/agent/        PM → Architect → Engineer → QA loop and bounded repair
+internal/db/           SQLite WAL/foreign-key setup and embedded migrations
+internal/store/        projects, runs, events, artifacts, files, and versions
+frontend/              React/TypeScript workbench and browser smoke
+scaffold/              fixed files supplied to generated Sandpack apps
+compose.yaml           local-first frontend, backend, and persistent volume
 ```
 
-## Contract at a glance
+## Delivery status
 
-| Section | Covers |
+Completed MVP:
+
+- Public repository, MIT license, pinned frontend dependency lockfile, and Go
+  module checksums
+- Home page, responsive project workbench, input validation, and server-driven
+  Build Pulse
+- Single four-stage agent loop, persisted ordered SSE with `Last-Event-ID`
+  replay, bounded compile repair, and sanitized failures
+- Sandpack stable-preview switching, file inspection/manual editing, version
+  history and restore
+- SQLite migrations, idempotency, project isolation, restart reconciliation,
+  and persistent OrbStack volume
+- Anonymous HTTPS demo and formal 10-prompt release gate with 0 open P0 defects
+
+Explicitly outside the MVP:
+
+- Login, per-user workspaces, quotas, billing, and production-grade rate limits
+- A permanent domain or managed deployment SLA
+- Multi-file generation, arbitrary dependencies, shell access, and per-project
+  containers
+- Independent multi-agent scheduling and collaboration
+
+## Known limitations and next steps
+
+1. **Historical Build Pulse hydration (P1).** After refreshing a successful
+   project, its stable preview, versions, and persisted successful run are
+   correct, but the four Build Pulse nodes may display “waiting.” Use the stable
+   version, version list, and persisted run terminal state as the source of
+   truth. The first follow-up should hydrate the stage nodes from persisted stage
+   artifacts.
+2. **Temporary tunnel availability (P1).** The Cloudflare quick tunnel has
+   briefly returned HTTP 530 and its hostname changes when the tunnel is
+   recreated. Refreshing or reconnecting resumes the persisted SSE stream and
+   does not stop backend generation. The second follow-up should move to a named
+   tunnel/custom domain, then add authentication and request limits before
+   broader sharing.
+3. **Anonymous access.** Anyone with the demo URL can create projects and spend
+   shared model quota. The temporary demo should be stopped when unattended:
+
+   ```bash
+   docker stop vibe-forge-tunnel vibe-forge-frontend vibe-forge-backend
+   ```
+
+## Submission
+
+| Deliverable | Location |
 | --- | --- |
-| `states` | `Project` (draft/active/archived), `Run` (queued/running/succeeded/failed/interrupted), `Version` (draft/validating/stable/failed) |
-| `events` | 8 unified SSE events + `Last-Event-ID` replay (`run_started`, `stage_started`, `stage_artifact`, `message_delta`, `file_written`, `preview_ready`, `run_failed`, `run_completed`) |
-| `paths` | 13 REST endpoints incl. `GET /api/health` |
-| `idempotency` | `Idempotency-Key` header, 30s TTL |
-| `errors` | stable `code` / `message` / `retryable` + HTTP map |
-| `limits` | prompt 1–4000 chars, file 200 KB, only `/src/App.tsx` writable |
+| Public demo | <https://passenger-programmers-enquiry-context.trycloudflare.com> |
+| Public source | <https://github.com/OrcaxNet/vibe-forge> |
+| Deployed source revision | [`ccb172608ebab7eb05294ad9c178d556fb8a795c`](https://github.com/OrcaxNet/vibe-forge/commit/ccb172608ebab7eb05294ad9c178d556fb8a795c) |
+| Setup, architecture, smoke, status, and limitations | This README |
 
-See [`contracts/README.md`](./contracts/README.md) for the full breakdown.
-
-## Status
-
-**Done (Stage 1–4):** public repo, workbench UI, lockfiles, license,
-`compose.yaml`, `.env.example`, frozen shared contract, SQLite store (WAL +
-foreign_keys + idempotent migration), persistence REST API, stable Sandpack
-preview, files-map integrity verification, App.tsx editing, version
-history/restore and manual-vs-agent locking, single agent loop (PM -> Architect
--> Engineer -> QA) with SSE stream + `Last-Event-ID` replay and bounded
-auto-repair, OrbStack local integration with restart recovery (interrupted-run
-reconcile + retry), bearer-token gateway auth, sanitized run-lifecycle logging;
-all backed by automated tests.
-
-**Not done (later stages):** online deploy (FLO-57) and final submission pack
-(FLO-62).
-
-## Frontend preview dependencies
-
-| Dependency | Pinned version | License | Purpose |
-| --- | --- | --- | --- |
-| `@codesandbox/sandpack-react` | `2.20.0` | Apache-2.0 | The only MVP browser compiler/runtime and preview surface |
-| `react` / `react-dom` | `18.3.1` | MIT | Workbench and generated-app runtime |
-| `playwright-core` | `1.62.0` (dev only) | Apache-2.0 | Local Chrome smoke tests; never shipped to production |
-
-## License
-
-[MIT](./LICENSE).
+The project is released under the [MIT License](./LICENSE). Direct dependency
+versions and integrity hashes are declared in `frontend/package-lock.json`,
+`go.mod`, and `go.sum`.

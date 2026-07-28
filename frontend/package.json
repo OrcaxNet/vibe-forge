@@ -1,9 +1,9 @@
 {
   "name": "vibe-forge-frontend",
   "private": true,
-  "version": "0.1.0-skeleton",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Vibe Forge workbench UI (home, project workspace, Build Pulse). Stage 1 skeleton; only /src/App.tsx is a writable business file in the generated scaffold, not here.",
+  "description": "Vibe Forge React workbench with Build Pulse, Sandpack preview, file editing, and version history.",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
