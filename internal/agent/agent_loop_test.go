@@ -26,7 +26,7 @@ type fakeLLM struct {
 	archText  string
 }
 
-func (f *fakeLLM) stream(_ context.Context, params anthropic.MessageNewParams, _ func(string)) (anthropic.Message, error) {
+func (f *fakeLLM) stream(_ context.Context, params anthropic.MessageNewParams, _ func(string), _ func()) (anthropic.Message, error) {
 	last := params.Messages[len(params.Messages)-1]
 	for _, b := range last.Content {
 		if b.OfToolResult != nil {
@@ -304,7 +304,7 @@ func TestLoopAutoRepairSucceedsOnSecondWrite(t *testing.T) {
 // with RATE_LIMITED (retryable) and leaves stableVersion unchanged (C-FR-04).
 func TestLoopInfraFailureLeavesStableUnchanged(t *testing.T) {
 	// Fake that returns a 429 on the very first call (PM stage).
-	failing := func(_ context.Context, _ anthropic.MessageNewParams, _ func(string)) (anthropic.Message, error) {
+	failing := func(_ context.Context, _ anthropic.MessageNewParams, _ func(string), _ func()) (anthropic.Message, error) {
 		return anthropic.Message{}, &anthropic.Error{StatusCode: 429}
 	}
 	l, st, projectID, runID := setupLoop(t, failing)
