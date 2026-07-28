@@ -179,6 +179,7 @@ cd frontend
 npm ci
 npm run smoke
 npm run test:e2e
+npm run test:preview-gate # 20 isolated cold-start contexts; >=95% attempt-0
 ```
 
 Repository and Compose checks:
@@ -276,13 +277,14 @@ Explicitly outside the MVP:
    availability follow-up should move the stack and data to a managed or
    redundant environment, then add authentication and request limits before
    broader sharing.
-2. **Sandpack first-load timeout (P1).** In some fresh browser sessions, the
-   stable preview can exceed its initial 10-second resource-ready window even
-   though the stable version and project data remain intact. If the timeout
-   appears, select **仅重试预览** (retry preview only); the preview normally becomes
-   interactive without regenerating the app. The follow-up should capture CDN,
-   iframe-handshake, and application timing across fresh sessions, then tune the
-   loading state, timeout, or retry policy from that evidence.
+2. **Sandpack remains a remote runtime dependency.** Stable previews load the
+   CodeSandbox bundler from the public network. Vibe Forge now makes the
+   optional Tailwind Play CDN non-blocking, records client/iframe readiness
+   timings in `[preview-runtime]` diagnostics, and automatically retries one
+   cold-start timeout before showing an actionable error. A prolonged Sandpack
+   or network outage can still leave preview unavailable; project data and the
+   last stable version remain intact, and **仅重试预览** retries without
+   regenerating the app.
 3. **Anonymous access.** Anyone with the demo URL can create projects and spend
    shared model quota. The self-hosted demo should be stopped when unattended:
 

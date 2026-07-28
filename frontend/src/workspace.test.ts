@@ -5,6 +5,7 @@ import {
   isFileEditLocked,
   normalizeFileTree,
   PreviewDeadlineError,
+  sandpackFiles,
   shouldStagePreview,
   withPreviewDeadline,
   type PreviewSnapshot,
@@ -72,6 +73,21 @@ describe("workspace version integrity", () => {
       false,
     );
     expect(shouldStagePreview("version-1", undefined, "version-2")).toBe(true);
+  });
+
+  it("keeps legacy Tailwind CDN loading from blocking Sandpack rendering", () => {
+    const original =
+      '<html><head><script src="https://cdn.tailwindcss.com"></script></head></html>';
+    const runtimeFiles = sandpackFiles({
+      "/index.html": original,
+      "/src/App.tsx": "export default 1",
+    });
+
+    expect(runtimeFiles["/index.html"].code).toContain(
+      '<script async src="https://cdn.tailwindcss.com"></script>',
+    );
+    expect(runtimeFiles["/src/App.tsx"].code).toBe("export default 1");
+    expect(original).not.toContain("async");
   });
 
   it("separates validation deadlines from runtime resource deadlines", async () => {

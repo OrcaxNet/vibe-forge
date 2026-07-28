@@ -232,6 +232,12 @@ try {
     args: ["--no-sandbox"],
   });
   page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.addInitScript(() => {
+    window.__previewRuntimeDiagnostics = [];
+    window.addEventListener("vibe-forge:preview-runtime", (event) => {
+      window.__previewRuntimeDiagnostics.push(event.detail);
+    });
+  });
   consoleErrors = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -508,12 +514,10 @@ try {
   runtimeDocumentCount = 0;
   await page.getByRole("button", { name: "预览" }).click();
   await page
-    .locator('section[data-preview-error-kind="resource_timeout"]')
+    .locator('section[data-preview-state="recovering"]')
     .waitFor({ timeout: 20_000 });
   await page
-    .getByText("预览资源 10 秒内没有就绪，请检查网络后重试。", {
-      exact: false,
-    })
+    .getByText("首次加载较慢，正在自动重试稳定预览…")
     .waitFor();
   await page
     .locator('iframe[title="Sandpack Preview"]')
@@ -522,13 +526,8 @@ try {
     .getByText("每日习惯追踪器")
     .waitFor();
   await page.getByRole("heading", { name: "从想法到可运行" }).waitFor();
-  assert.equal(
-    await page.locator('iframe[title="Sandpack Preview"]').count(),
-    1,
-  );
 
   runtimeBlocked = false;
-  await page.getByRole("button", { name: "仅重试预览" }).click();
   const updatedPreviewFrame = page
     .locator('iframe[title="Sandpack Preview"]')
     .last()
@@ -540,6 +539,34 @@ try {
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
   await page.getByText("v/22222222").waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "仅重试预览" })
+      .count(),
+    0,
+    "a recovered cold start must not require a manual retry",
+  );
+  const recoveryDiagnostics = await page.evaluate(() =>
+    window.__previewRuntimeDiagnostics.filter(
+      (entry) => entry.versionId === "22222222-2222-4222-8222-222222222222",
+    ),
+  );
+  assert.ok(
+    recoveryDiagnostics.some(
+      (entry) =>
+        entry.event === "failure" &&
+        ["client_connect_timeout", "iframe_ready_timeout"].includes(
+          entry.reason,
+        ),
+    ),
+    "the first failed attempt must report whether the client or iframe handshake timed out",
+  );
+  assert.ok(
+    recoveryDiagnostics.some(
+      (entry) => entry.event === "ready" && entry.attempt === 1,
+    ),
+    "the automatic retry must emit a successful second-attempt timing",
+  );
   await page.waitForFunction(
     () => document.querySelectorAll('iframe[title="Sandpack Preview"]').length === 1,
   );
