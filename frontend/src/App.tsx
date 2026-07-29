@@ -43,6 +43,10 @@ import {
   type WorkflowSnapshot,
   type WorkflowStageView,
 } from "./workflowState";
+import {
+  shouldShowRecentProjectsToggle,
+  visibleRecentProjects,
+} from "./recentProjects";
 
 const WorkspacePanel = lazy(() => import("./WorkspacePanel"));
 
@@ -731,8 +735,10 @@ function HomePage({
   const [projectsState, setProjectsState] = useState<
     "loading" | "ready" | "error"
   >("loading");
+  const [recentProjectsExpanded, setRecentProjectsExpanded] = useState(false);
 
   const loadProjects = useCallback(async () => {
+    setRecentProjectsExpanded(false);
     setProjectsState("loading");
     try {
       setProjects(await api.listProjects());
@@ -874,6 +880,28 @@ function HomePage({
                 重新加载
               </button>
             )}
+            {shouldShowRecentProjectsToggle(
+              projectsState,
+              projects.length,
+            ) && (
+              <button
+                type="button"
+                aria-expanded={recentProjectsExpanded}
+                aria-controls="recent-projects-grid"
+                onClick={() =>
+                  setRecentProjectsExpanded((expanded) => !expanded)
+                }
+                className={BUTTON_SECONDARY}
+              >
+                {recentProjectsExpanded ? "收起" : "更多"}
+                <AppIcon
+                  name="chevron"
+                  className={`h-4 w-4 transition-transform motion-reduce:transition-none ${
+                    recentProjectsExpanded ? "-rotate-90" : "rotate-90"
+                  }`}
+                />
+              </button>
+            )}
           </div>
 
           <div aria-live="polite">
@@ -921,38 +949,41 @@ function HomePage({
 
             {projectsState === "ready" && projects.length > 0 && (
               <div
+                id="recent-projects-grid"
                 aria-label="最近项目列表"
                 className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2 lg:grid-cols-3"
               >
-                {projects.slice(0, 6).map((project) => (
-                  <button
-                    key={project.id}
-                    type="button"
-                    onClick={() => onOpenProject(project.id)}
-                    className="group min-h-44 min-w-0 max-w-full rounded-[22px] border border-[#dce2e9] bg-white p-5 text-left shadow-[0_8px_30px_rgba(31,43,63,.05)] transition hover:-translate-y-1 hover:border-[#aebee0] hover:shadow-[0_16px_40px_rgba(31,43,63,.1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#1756d8] motion-reduce:transform-none"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#edf3ff] text-[#1756d8]">
-                        <AppIcon name="layers" className="h-5 w-5" />
-                      </span>
-                      <AppIcon
-                        name="arrow"
-                        className="h-5 w-5 text-[#9ba7b7] transition group-hover:translate-x-1 group-hover:text-[#1756d8] motion-reduce:transform-none"
-                      />
-                    </div>
-                    <h3 className="mt-5 min-w-0 truncate text-base font-black text-[#17243b]">
-                      {project.title}
-                    </h3>
-                    <div className="mt-3 flex items-center justify-between gap-3 text-xs text-[#748196]">
-                      <span className="capitalize">
-                        {project.status === "active" ? "构建中" : "已保存"}
-                      </span>
-                      <time dateTime={project.updatedAt}>
-                        {formatRelativeTime(project.updatedAt)}
-                      </time>
-                    </div>
-                  </button>
-                ))}
+                {visibleRecentProjects(projects, recentProjectsExpanded).map(
+                  (project) => (
+                    <button
+                      key={project.id}
+                      type="button"
+                      onClick={() => onOpenProject(project.id)}
+                      className="group min-h-44 min-w-0 max-w-full rounded-[22px] border border-[#dce2e9] bg-white p-5 text-left shadow-[0_8px_30px_rgba(31,43,63,.05)] transition hover:-translate-y-1 hover:border-[#aebee0] hover:shadow-[0_16px_40px_rgba(31,43,63,.1)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#1756d8] motion-reduce:transform-none"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#edf3ff] text-[#1756d8]">
+                          <AppIcon name="layers" className="h-5 w-5" />
+                        </span>
+                        <AppIcon
+                          name="arrow"
+                          className="h-5 w-5 text-[#9ba7b7] transition group-hover:translate-x-1 group-hover:text-[#1756d8] motion-reduce:transform-none"
+                        />
+                      </div>
+                      <h3 className="mt-5 min-w-0 truncate text-base font-black text-[#17243b]">
+                        {project.title}
+                      </h3>
+                      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-[#748196]">
+                        <span className="capitalize">
+                          {project.status === "active" ? "构建中" : "已保存"}
+                        </span>
+                        <time dateTime={project.updatedAt}>
+                          {formatRelativeTime(project.updatedAt)}
+                        </time>
+                      </div>
+                    </button>
+                  ),
+                )}
               </div>
             )}
           </div>
