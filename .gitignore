@@ -33,3 +33,7 @@ dist/
 internal/agent/tenprompts/
 internal/agent/ten_prompts_results.json
 ten_smoke*.log
+
+# FLO-110 provider preflight artifacts (generated, not committed)
+artifacts/provider-preflight/
+provider-preflight-manifest*.json
