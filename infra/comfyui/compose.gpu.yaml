@@ -1,0 +1,33 @@
+name: vibe-forge-comfyui-baseline
+
+services:
+  comfyui:
+    image: vibe-forge-comfyui:comfyui-v0.24.0-pytorch-2.8.0-cu128
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: infra/comfyui/Dockerfile
+    gpus: all
+    user: "${COMFY_UID:-1000}:${COMFY_GID:-1000}"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "${COMFYUI_PORT:-8188}:8188"
+    volumes:
+      - "${COMFY_RUNTIME_DIR:-./runtime}/models/diffusion_models:/opt/ComfyUI/models/diffusion_models:ro"
+      - "${COMFY_RUNTIME_DIR:-./runtime}/models/text_encoders:/opt/ComfyUI/models/text_encoders:ro"
+      - "${COMFY_RUNTIME_DIR:-./runtime}/models/vae:/opt/ComfyUI/models/vae:ro"
+      - "${COMFY_RUNTIME_DIR:-./runtime}/input:/opt/ComfyUI/input:ro"
+      - "${COMFY_RUNTIME_DIR:-./runtime}/output:/opt/ComfyUI/output"
+      - "${COMFY_RUNTIME_DIR:-./runtime}/temp:/opt/ComfyUI/temp"
+      - "${COMFY_RUNTIME_DIR:-./runtime}/user:/opt/ComfyUI/user"
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: "8gb"
+    stop_grace_period: 30s

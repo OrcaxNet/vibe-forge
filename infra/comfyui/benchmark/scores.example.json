@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "scores": [
+    {
+      "result_id": "replace-with-run-id:single-01:cold",
+      "reviewer": "replace-with-reviewer",
+      "reviewed_at": "2026-01-01T00:00:00Z",
+      "scores": {
+        "reference_consistency": 3,
+        "prompt_adherence": 3,
+        "temporal_coherence": 3,
+        "motion_camera": 3,
+        "artifact_control": 3
+      },
+      "notes": "Replace this example; do not treat it as benchmark evidence."
+    }
+  ]
+}

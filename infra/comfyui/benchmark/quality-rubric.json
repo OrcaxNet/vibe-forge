@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "scale": {
+    "minimum": 1,
+    "maximum": 5,
+    "anchors": {
+      "1": "unusable or major failure",
+      "2": "frequent severe defects",
+      "3": "usable with visible defects",
+      "4": "minor defects only",
+      "5": "clean and fully convincing"
+    }
+  },
+  "dimensions": [
+    {
+      "id": "reference_consistency",
+      "description": "Character, scene, palette, silhouette, and prop identity remain faithful to the reference image."
+    },
+    {
+      "id": "prompt_adherence",
+      "description": "Requested action, composition, lighting, and shot language are present without contradictory content."
+    },
+    {
+      "id": "temporal_coherence",
+      "description": "Faces, limbs, objects, textures, and lighting remain coherent across frames without flicker or morphing."
+    },
+    {
+      "id": "motion_camera",
+      "description": "Subject motion and camera motion are smooth, physically readable, and match the prompt."
+    },
+    {
+      "id": "artifact_control",
+      "description": "No duplicate subjects or props, malformed anatomy, text/watermark leakage, frame corruption, or severe compression artifacts."
+    }
+  ],
+  "record_contract": {
+    "required": [
+      "result_id",
+      "reviewer",
+      "reviewed_at",
+      "scores",
+      "notes"
+    ],
+    "score_ids": [
+      "reference_consistency",
+      "prompt_adherence",
+      "temporal_coherence",
+      "motion_camera",
+      "artifact_control"
+    ]
+  },
+  "gate_note": "FLO-110 records quality observations but does not freeze a cross-project quality threshold; FLO-109 owns the gold-set scoring threshold and release gate."
+}

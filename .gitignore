@@ -5,6 +5,8 @@
 *.out
 coverage.out
 vendor/
+__pycache__/
+*.py[cod]
 
 # Local environment / runtime data
 .env
@@ -33,3 +35,6 @@ dist/
 internal/agent/tenprompts/
 internal/agent/ten_prompts_results.json
 ten_smoke*.log
+
+# FLO-110 ComfyUI models, generated fixtures, videos, and benchmark evidence
+infra/comfyui/runtime/

@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "default_action": "deny",
+    "allowed_licenses": [
+      "Apache-2.0",
+      "BSD-3-Clause",
+      "MIT"
+    ],
+    "custom_nodes_allowed": false,
+    "scoped_exceptions": [
+      {
+        "license": "GPL-3.0-only",
+        "artifact_ids": [
+          "comfyui-core"
+        ],
+        "scope": "internal_poc_execution_only",
+        "redistribution_allowed": false,
+        "release_requires_legal_approval": true,
+        "reason": "The frozen PoC baseline requires ComfyUI. GPL-3.0 is not in the FLO-98 D-13 default commercial allowlist, so this exception does not authorize product image distribution."
+      }
+    ]
+  },
+  "runtime": {
+    "image": "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime@sha256:417bd75df6365104c283ea4c1651fb3530d9eb5a4c2fafa51943cff2a94e6385",
+    "platform": "linux/amd64",
+    "pytorch": "2.8.0",
+    "cuda": "12.8",
+    "cudnn": "9",
+    "linux_driver": "570.124.06",
+    "nvidia_container_toolkit": "1.17.8",
+    "license_components": [
+      {
+        "name": "PyTorch",
+        "license": "BSD-3-Clause",
+        "evidence": "https://github.com/pytorch/pytorch/blob/v2.8.0/LICENSE"
+      },
+      {
+        "name": "CUDA Toolkit container components",
+        "license": "NVIDIA-CUDA-EULA",
+        "evidence": "https://docs.nvidia.com/cuda/eula/index.html",
+        "scope": "internal_poc_execution_only",
+        "release_requires_legal_approval": true
+      },
+      {
+        "name": "cuDNN container components",
+        "license": "NVIDIA-cuDNN-SLA",
+        "evidence": "https://docs.nvidia.com/deeplearning/cudnn/sla/index.html",
+        "scope": "internal_poc_execution_only",
+        "release_requires_legal_approval": true
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "id": "comfyui-core",
+      "kind": "node_bundle",
+      "name": "ComfyUI core nodes",
+      "source": "https://github.com/Comfy-Org/ComfyUI",
+      "source_archive": "https://github.com/Comfy-Org/ComfyUI/archive/f49bdb655707b97952dcef40e12e5af1f08d2007.tar.gz",
+      "source_archive_sha256": "93e86751a0567e19db55dc34e3061663390b44fd5f9a1a10d3e6a37c35c484a4",
+      "revision": "f49bdb655707b97952dcef40e12e5af1f08d2007",
+      "release": "v0.24.0",
+      "license": "GPL-3.0-only",
+      "license_evidence": "https://github.com/Comfy-Org/ComfyUI/blob/f49bdb655707b97952dcef40e12e5af1f08d2007/LICENSE",
+      "allowed_scope": "internal_poc_execution_only",
+      "release_blocker": "Legal approval is required before distributing a container that includes ComfyUI.",
+      "allowed": true
+    },
+    {
+      "id": "wan22-ti2v-5b-fp16",
+      "kind": "model",
+      "name": "wan2.2_ti2v_5B_fp16.safetensors",
+      "source": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+      "source_revision": "fb1388adc906ab39ffc26ee40e96b22886b56bc4",
+      "destination": "models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+      "size_bytes": 9999658848,
+      "sha256": "456f901338bd9eadbded3828b819109a9b68e8a525ca5cf8d0049a69fcfeca1e",
+      "license": "Apache-2.0",
+      "license_evidence": "https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B/blob/921dbaf3f1674a56f47e83fb80a34bac8a8f203e/README.md#license-agreement",
+      "provenance_note": "Comfy-Org single-file repackaging used by the official ComfyUI workflow; its repository has no card-level license field, so the allowlist assertion is based on the Apache-2.0 upstream Wan2.2 weights.",
+      "allowed": true
+    },
+    {
+      "id": "wan22-vae",
+      "kind": "model",
+      "name": "wan2.2_vae.safetensors",
+      "source": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/fb1388adc906ab39ffc26ee40e96b22886b56bc4/split_files/vae/wan2.2_vae.safetensors",
+      "source_revision": "fb1388adc906ab39ffc26ee40e96b22886b56bc4",
+      "destination": "models/vae/wan2.2_vae.safetensors",
+      "size_bytes": 1409400960,
+      "sha256": "e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156",
+      "license": "Apache-2.0",
+      "license_evidence": "https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B/blob/921dbaf3f1674a56f47e83fb80a34bac8a8f203e/README.md#license-agreement",
+      "provenance_note": "Comfy-Org single-file repackaging used by the official ComfyUI workflow; its repository has no card-level license field, so the allowlist assertion is based on the Apache-2.0 upstream Wan2.2 weights.",
+      "allowed": true
+    },
+    {
+      "id": "umt5-xxl-fp8",
+      "kind": "model",
+      "name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "source": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/06e001fc51048fb03433a6fb25334de7836704a5/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "source_revision": "06e001fc51048fb03433a6fb25334de7836704a5",
+      "destination": "models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "size_bytes": 6735906897,
+      "sha256": "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68",
+      "license": "Apache-2.0",
+      "license_evidence": "https://huggingface.co/google/umt5-xxl/blob/66cb9e7e85526fe440a945569e42c72fb6cbc0ad/README.md",
+      "provenance_note": "Comfy-Org FP8 repackaging used by the official ComfyUI workflow; its repository has no card-level license field, so the allowlist assertion is based on the Apache-2.0 upstream mT5 implementation and model family.",
+      "allowed": true
+    },
+    {
+      "id": "official-wan22-workflow",
+      "kind": "workflow_source",
+      "name": "video_wan2_2_5B_ti2v.json",
+      "source": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/53820df822a96488549967187d550000d8bed6fc/templates/video_wan2_2_5B_ti2v.json",
+      "source_revision": "53820df822a96488549967187d550000d8bed6fc",
+      "sha256": "50390798a133757075d750ab78b26274e3bf3e4a09f46aaa2f08d9559e62750b",
+      "license": "MIT",
+      "license_evidence": "https://github.com/Comfy-Org/workflow_templates/blob/53820df822a96488549967187d550000d8bed6fc/LICENSE",
+      "allowed": true
+    }
+  ]
+}
