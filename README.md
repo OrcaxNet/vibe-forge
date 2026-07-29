@@ -58,6 +58,24 @@ Browser
   idempotency, limits, and stable errors. Go embeds it and the frontend imports
   it directly.
 
+### AI video production architecture slice
+
+The repository also contains an isolated, contract-first AI video production
+control-plane skeleton under [`video-pipeline/`](video-pipeline/README.md). It
+adds separate `video-*` Go commands, PostgreSQL migrations, a Temporal
+Workflow/Activity worker, a no-key deterministic Provider fixture,
+content-addressed artifact storage, OpenAPI/AsyncAPI contracts, ADRs, diagrams,
+and a no-GPU local Compose stack. Generative work is routed through provider
+capability aliases; firewalled local inference is not a runtime dependency:
+
+```bash
+make video-up
+make video-smoke
+```
+
+This slice deliberately does not change the deployed Vibe Forge frontend,
+SQLite schema, or `/api/` behavior. Its public namespace is `/video-api/v1`.
+
 Deliberate MVP choices:
 
 - One agent loop keeps context and recovery behavior observable; this is not four
