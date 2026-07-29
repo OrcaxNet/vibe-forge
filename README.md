@@ -7,7 +7,7 @@ in **SQLite**.
 
 [Open the live demo](https://vf.floatflow.com)
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
-· [Inspect the deployed frontend revision](https://github.com/OrcaxNet/vibe-forge/commit/c5d56cff9dc5139c09d2b1772e86f32c6051bb74)
+· [Inspect the deployed frontend revision](https://github.com/OrcaxNet/vibe-forge/commit/4774382f80271382005f628722bc3f5cebdeed6f)
 
 > The anonymous demo uses a Cloudflare named tunnel with the fixed
 > `vf.floatflow.com` hostname and runs on a local OrbStack host. The URL remains
@@ -31,7 +31,7 @@ successfully. Every run produced four ordered stage artifacts, `file_written`,
 `preview_ready`, `run_completed`, and a matching stable version. The longest run
 took 141.9 seconds, so allow roughly 1.5–2.5 minutes for a full generation.
 This SHA is a test baseline, not the current deployment. The frontend is
-deployed from `c5d56cff9dc5139c09d2b1772e86f32c6051bb74`; the backend remains
+deployed from `4774382f80271382005f628722bc3f5cebdeed6f`; the backend remains
 deployed from `1353d82424b304c6fc2cd55d6c4336ee9e718e36`.
 
 ## Architecture
@@ -195,12 +195,12 @@ runtime `npm install` occurs.
 
 ### Deployment traceability
 
-The PR #20 release rebuilt only the frontend. The backend was not rebuilt and
+The PR #22 release rebuilt only the frontend. The backend was not rebuilt and
 continues to run the preceding deployed revision:
 
 | Component | Deployed Git revision |
 | --- | --- |
-| Frontend | [`c5d56cff9dc5139c09d2b1772e86f32c6051bb74`](https://github.com/OrcaxNet/vibe-forge/commit/c5d56cff9dc5139c09d2b1772e86f32c6051bb74) |
+| Frontend | [`4774382f80271382005f628722bc3f5cebdeed6f`](https://github.com/OrcaxNet/vibe-forge/commit/4774382f80271382005f628722bc3f5cebdeed6f) |
 | Backend | [`1353d82424b304c6fc2cd55d6c4336ee9e718e36`](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36) |
 
 The public [`/build-info.json`](https://vf.floatflow.com/build-info.json) is the
@@ -299,7 +299,7 @@ Explicitly outside the MVP:
 | --- | --- |
 | Public demo | <https://vf.floatflow.com> |
 | Public source | <https://github.com/OrcaxNet/vibe-forge> |
-| Deployed frontend revision | [`c5d56cff9dc5139c09d2b1772e86f32c6051bb74`](https://github.com/OrcaxNet/vibe-forge/commit/c5d56cff9dc5139c09d2b1772e86f32c6051bb74) |
+| Deployed frontend revision | [`4774382f80271382005f628722bc3f5cebdeed6f`](https://github.com/OrcaxNet/vibe-forge/commit/4774382f80271382005f628722bc3f5cebdeed6f) |
 | Deployed backend revision | [`1353d82424b304c6fc2cd55d6c4336ee9e718e36`](https://github.com/OrcaxNet/vibe-forge/commit/1353d82424b304c6fc2cd55d6c4336ee9e718e36) |
 | Setup, architecture, smoke, status, and limitations | This README |
 
