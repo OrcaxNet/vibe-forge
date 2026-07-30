@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestValidateFilePath: only /src/App.tsx is writable; traversal and scaffold
 // paths are rejected (B-FR-01, acceptance 3: illegal path -> 422).
@@ -65,6 +68,15 @@ func TestBuildFilesMap(t *testing.T) {
 		}
 		if !e.Readonly {
 			t.Errorf("scaffold file %q must be read-only", e.Path)
+		}
+	}
+
+	for _, e := range m {
+		if e.Path == "/index.html" && strings.Contains(e.Content, "cdn.tailwindcss.com") {
+			t.Error("index.html must not depend on the legacy Tailwind Play CDN")
+		}
+		if e.Path == "/src/main.tsx" && !strings.Contains(e.Content, `import "@tailwindcss/browser";`) {
+			t.Error("main.tsx must load the pinned Tailwind browser runtime")
 		}
 	}
 }

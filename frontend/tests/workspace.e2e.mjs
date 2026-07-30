@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { chromium } from "playwright-core";
+import {
+  startViteTestServer,
+  stopViteTestServer,
+  waitForViteTestServer,
+} from "./vite-test-server.mjs";
 
-const baseURL = "http://127.0.0.1:5173";
+const viteServer = await startViteTestServer({
+  name: "workspace",
+  portEnv: "WORKSPACE_E2E_PORT",
+});
+const { baseURL } = viteServer;
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const projectId = "project-1";
@@ -29,9 +37,15 @@ const firstApp = `import { useState } from "react";
 export default function App() {
   const [items, setItems] = useState(["阅读"]);
   return <main className="min-h-screen bg-slate-50 p-8">
-    <h1 className="text-2xl font-bold">每日习惯追踪器</h1>
-    <button onClick={() => setItems([...items, "新习惯"])}>新增习惯</button>
-    {items.map((item, index) => <div key={index}>{item}<button onClick={() => setItems(items.filter((_, i) => i !== index))}>删除</button></div>)}
+    <section className="mx-auto max-w-xl rounded-3xl bg-white p-8 shadow-xl">
+      <p className="text-sm font-semibold uppercase tracking-widest text-blue-600">Daily rhythm</p>
+      <h1 className="mt-2 text-2xl font-bold text-slate-900">每日习惯追踪器</h1>
+      <p className="mt-2 text-slate-500">保持微小进步，让每一天都有迹可循。</p>
+      <button className="mt-6 rounded-xl bg-blue-600 px-4 py-2 font-semibold text-white shadow" onClick={() => setItems([...items, "新习惯"])}>新增习惯</button>
+      <div className="mt-6 space-y-3">
+        {items.map((item, index) => <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3" key={index}><span className="font-medium text-slate-700">{item}</span><button className="rounded-lg px-3 py-1 text-sm font-semibold text-rose-600 hover:bg-rose-50" onClick={() => setItems(items.filter((_, i) => i !== index))}>删除</button></div>)}
+      </div>
+    </section>
   </main>;
 }`;
 
@@ -39,9 +53,15 @@ const secondApp = `import { useState } from "react";
 export default function App() {
   const [items, setItems] = useState(["阅读"]);
   return <main className="min-h-screen bg-sky-50 p-8 text-sky-950">
-    <h1 className="text-2xl font-bold text-sky-700">习惯追踪器 · 海蓝</h1>
-    <button onClick={() => setItems([...items, "新习惯"])}>新增习惯</button>
-    {items.map((item, index) => <div key={index}>{item}<button onClick={() => setItems(items.filter((_, i) => i !== index))}>删除</button></div>)}
+    <section className="mx-auto max-w-xl rounded-3xl bg-white p-8 shadow-xl">
+      <p className="text-sm font-semibold uppercase tracking-widest text-sky-600">Daily rhythm</p>
+      <h1 className="mt-2 text-2xl font-bold text-sky-700">习惯追踪器 · 海蓝</h1>
+      <p className="mt-2 text-sky-700/70">保持微小进步，让每一天都有迹可循。</p>
+      <button className="mt-6 rounded-xl bg-sky-600 px-4 py-2 font-semibold text-white shadow" onClick={() => setItems([...items, "新习惯"])}>新增习惯</button>
+      <div className="mt-6 space-y-3">
+        {items.map((item, index) => <div className="flex items-center justify-between rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3" key={index}><span className="font-medium text-sky-800">{item}</span><button className="rounded-lg px-3 py-1 text-sm font-semibold text-rose-600 hover:bg-rose-50" onClick={() => setItems(items.filter((_, i) => i !== index))}>删除</button></div>)}
+      </div>
+    </section>
   </main>;
 }`;
 
@@ -92,6 +112,26 @@ const firstProjectResponseGate = new Promise((resolve) => {
 let validationBlocked = true;
 let runtimeBlocked = false;
 let runtimeDocumentCount = 0;
+let legacyTailwindRequests = 0;
+
+async function assertTailwindStyles(previewFrame, heading) {
+  const main = previewFrame.locator("main");
+  await previewFrame.getByRole("heading", { name: heading }).waitFor();
+  const styles = await main.evaluate((element) => {
+    const mainStyle = getComputedStyle(element);
+    const headingStyle = getComputedStyle(element.querySelector("h1"));
+    return {
+      backgroundColor: mainStyle.backgroundColor,
+      paddingTop: mainStyle.paddingTop,
+      headingFontSize: headingStyle.fontSize,
+      headingFontWeight: headingStyle.fontWeight,
+    };
+  });
+  assert.equal(styles.paddingTop, "32px");
+  assert.notEqual(styles.backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.equal(styles.headingFontSize, "24px");
+  assert.equal(styles.headingFontWeight, "700");
+}
 
 function project() {
   const completedStages = [
@@ -196,36 +236,11 @@ function fileTree() {
   };
 }
 
-async function waitForServer() {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(baseURL);
-      if (response.ok) return;
-    } catch {
-      // Vite is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error("Vite did not start within 20 seconds");
-}
-
-const server = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let serverOutput = "";
-server.stdout.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-server.stderr.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-
 let browser;
 let page;
 let consoleErrors = [];
 try {
-  await waitForServer();
+  await waitForViteTestServer(viteServer);
   browser = await chromium.launch({
     executablePath: chromePath,
     headless: true,
@@ -243,9 +258,10 @@ try {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
-  await page.context().route(/cdn\.tailwindcss\.com/, (route) =>
-    route.abort("timedout"),
-  );
+  await page.context().route(/cdn\.tailwindcss\.com/, (route) => {
+    legacyTailwindRequests += 1;
+    return route.abort("timedout");
+  });
   await page
     .context()
     .route(/https:\/\/.*sandpack\.codesandbox\.io\/.*/, (route) => {
@@ -444,6 +460,7 @@ try {
   await page
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
+  await assertTailwindStyles(previewFrame, "每日习惯追踪器");
   await page.screenshot({
     path: "test-results/workflow-completed.png",
     fullPage: true,
@@ -452,6 +469,19 @@ try {
     await page.getByText("正在启动稳定预览…").isVisible().catch(() => false),
     false,
   );
+
+  await page.getByRole("button", { name: "刷新预览" }).click();
+  await page
+    .locator('section[data-preview-state="booting"]')
+    .waitFor({ timeout: 5_000 });
+  await page
+    .locator('section[data-preview-state="ready"]')
+    .waitFor({ timeout: 20_000 });
+  const refreshedPreviewFrame = page
+    .locator('iframe[title="Sandpack Preview"]')
+    .first()
+    .contentFrame();
+  await assertTailwindStyles(refreshedPreviewFrame, "每日习惯追踪器");
 
   const iframe = page.locator('iframe[title="Sandpack Preview"]').first();
   const sandbox = await iframe.getAttribute("sandbox");
@@ -492,6 +522,10 @@ try {
   await page
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
+  await assertTailwindStyles(
+    page.locator('iframe[title="Sandpack Preview"]').first().contentFrame(),
+    "每日习惯追踪器",
+  );
   assert.equal(
     await page.getByText("正在启动稳定预览…").isVisible().catch(() => false),
     false,
@@ -538,6 +572,7 @@ try {
   await page
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
+  await assertTailwindStyles(updatedPreviewFrame, "习惯追踪器 · 海蓝");
   await page.getByText("v/22222222").waitFor();
   assert.equal(
     await page
@@ -634,21 +669,24 @@ try {
     "a consistency conflict should be reported",
   );
 
+  assert.equal(
+    legacyTailwindRequests,
+    0,
+    "legacy Tailwind CDN scripts must be removed before Sandpack runs",
+  );
   const relevantErrors = consoleErrors.filter(
     (message) =>
-      !message.includes("cdn.tailwindcss.com") &&
-      message !== "Failed to load resource: net::ERR_TIMED_OUT" &&
       !message.includes("Download the React DevTools") &&
       !message.includes("workflow_state_conflict") &&
       !message.includes("status of 503"),
   );
   assert.deepEqual(relevantErrors, []);
   console.log(
-    "workspace e2e passed: no waiting flash, completed restore, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, initial load, tab roundtrip state isolation, rendered iframe with CDN timeout, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375px",
+    "workspace e2e passed: no waiting flash, completed restore, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, styled initial load/refresh/tab roundtrip/version switch, no legacy CDN request, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375px",
   );
 } catch (error) {
   releaseFirstProjectResponse?.();
-  console.error(serverOutput);
+  console.error(viteServer.output());
   if (page) {
     console.error(await page.locator("body").innerText().catch(() => ""));
     console.error(
@@ -695,12 +733,5 @@ try {
   throw error;
 } finally {
   if (browser) await browser.close();
-  server.kill("SIGTERM");
-  await new Promise((resolve) => {
-    const timer = setTimeout(resolve, 2_000);
-    server.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+  await stopViteTestServer(viteServer);
 }
