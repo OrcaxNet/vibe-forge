@@ -10,6 +10,7 @@
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "test": "vitest run",
     "test:e2e": "node tests/auth-gate.e2e.mjs && node tests/home-responsive.e2e.mjs && node tests/workspace.e2e.mjs",
+    "test:auth-integration": "node tests/auth-integration.e2e.mjs",
     "test:preview-gate": "node tests/preview-cold-start.e2e.mjs",
     "smoke": "npm test && npm run build",
     "verify:deployment": "node scripts/verify-deployment.mjs"
