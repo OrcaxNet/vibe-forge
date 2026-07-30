@@ -49,6 +49,7 @@ import {
 } from "./recentProjects";
 
 const WorkspacePanel = lazy(() => import("./WorkspacePanel"));
+const ContextCatalog = lazy(() => import("./ContextCatalog"));
 
 type JsonObject = Record<string, unknown>;
 
@@ -100,7 +101,10 @@ type ConnectionState =
   | "stale";
 type WorkspaceTab = "build" | WorkspaceDetailTab;
 
-type Route = { kind: "home" } | { kind: "project"; projectId: string };
+type Route =
+  | { kind: "home" }
+  | { kind: "project"; projectId: string }
+  | { kind: "contextCatalog"; componentId?: string };
 
 type Bootstrap = {
   project: ProjectSummary;
@@ -449,6 +453,17 @@ const api = {
 };
 
 function parseRoute(): Route {
+  const catalogMatch = window.location.pathname.match(
+    /^\/context-catalog(?:\/([^/]+))?\/?$/,
+  );
+  if (catalogMatch) {
+    return {
+      kind: "contextCatalog",
+      componentId: catalogMatch[1]
+        ? decodeURIComponent(catalogMatch[1])
+        : undefined,
+    };
+  }
   const match = window.location.pathname.match(/^\/project\/([^/]+)\/?$/);
   return match
     ? { kind: "project", projectId: decodeURIComponent(match[1]) }
@@ -468,7 +483,11 @@ function useRoute() {
     const path =
       next.kind === "home"
         ? "/"
-        : `/project/${encodeURIComponent(next.projectId)}`;
+        : next.kind === "project"
+          ? `/project/${encodeURIComponent(next.projectId)}`
+          : next.componentId
+            ? `/context-catalog/${encodeURIComponent(next.componentId)}`
+            : "/context-catalog";
     window.history.pushState({}, "", path);
     setRoute(next);
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -722,9 +741,11 @@ function PromptComposer({
 
 function HomePage({
   onOpenProject,
+  onOpenContextCatalog,
   onCreated,
 }: {
   onOpenProject: (projectId: string) => void;
+  onOpenContextCatalog: () => void;
   onCreated: (bootstrap: Bootstrap) => void;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -855,6 +876,17 @@ function HomePage({
                     {example}
                   </button>
                 ))}
+              </div>
+              <div className="mt-5 flex justify-center">
+                <button
+                  type="button"
+                  onClick={onOpenContextCatalog}
+                  className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#aac9be] bg-[#edf6f2] px-4 py-2 text-sm font-black text-[#17614f] transition hover:border-[#6d9e8b] hover:bg-[#e2f0ea] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#17614f]"
+                >
+                  <AppIcon name="layers" className="h-4 w-4" />
+                  打开 Context Catalog
+                  <AppIcon name="arrow" className="h-4 w-4" />
+                </button>
               </div>
             </div>
           </div>
@@ -2167,11 +2199,35 @@ export default function App() {
           setBootstrap(undefined);
           navigate({ kind: "project", projectId });
         }}
+        onOpenContextCatalog={() => {
+          setBootstrap(undefined);
+          navigate({ kind: "contextCatalog" });
+        }}
         onCreated={(nextBootstrap) => {
           setBootstrap(nextBootstrap);
           navigate({ kind: "project", projectId: nextBootstrap.project.id });
         }}
       />
+    );
+  }
+
+  if (route.kind === "contextCatalog") {
+    return (
+      <Suspense
+        fallback={
+          <div className="grid min-h-screen place-items-center bg-[#eef0eb] text-sm font-bold text-[#536159]">
+            正在加载 Context Catalog…
+          </div>
+        }
+      >
+        <ContextCatalog
+          componentId={route.componentId}
+          onHome={() => navigate({ kind: "home" })}
+          onSelect={(componentId) =>
+            navigate({ kind: "contextCatalog", componentId })
+          }
+        />
+      </Suspense>
     );
   }
 
