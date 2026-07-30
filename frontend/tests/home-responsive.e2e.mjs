@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
-import { startViteTestServer } from "./vite-test-server.mjs";
+import {
+  startViteTestServer,
+  stopViteTestServer,
+  waitForViteTestServer,
+} from "./vite-test-server.mjs";
 
-const testServer = await startViteTestServer(41731);
-const { baseURL } = testServer;
+const viteServer = await startViteTestServer({
+  name: "home-responsive",
+  portEnv: "HOME_E2E_PORT",
+});
+const { baseURL } = viteServer;
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -23,6 +30,7 @@ let projectListRequests = 0;
 
 let browser;
 try {
+  await waitForViteTestServer(viteServer);
   browser = await chromium.launch({
     executablePath: chromePath,
     headless: true,
@@ -253,9 +261,9 @@ try {
     "home responsive e2e passed: 6/7 boundary, keyboard toggle, ARIA/focus, retry, refresh reset, 320/390/768/1024px overflow, seventh-card navigation, no duplicate list request",
   );
 } catch (error) {
-  console.error(testServer.output());
+  console.error(viteServer.output());
   throw error;
 } finally {
   if (browser) await browser.close();
-  await testServer.stop();
+  await stopViteTestServer(viteServer);
 }
