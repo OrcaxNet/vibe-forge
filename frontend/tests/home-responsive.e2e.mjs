@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
-const baseURL = "http://127.0.0.1:5173";
+const baseURL = "http://127.0.0.1:41731";
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -34,9 +34,18 @@ async function waitForServer() {
   throw new Error("Vite did not start within 20 seconds");
 }
 
-const server = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawn(
+  process.execPath,
+  [
+    "node_modules/vite/bin/vite.js",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "41731",
+    "--strictPort",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
 let serverOutput = "";
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
@@ -61,6 +70,16 @@ try {
 
   await page.context().route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/auth/session") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          authenticated: true,
+          expiresAt: "2026-07-30T20:00:00Z",
+        }),
+      });
+    }
     if (path === "/api/health") {
       return route.fulfill({
         status: 200,

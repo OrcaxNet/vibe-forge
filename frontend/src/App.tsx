@@ -1,10 +1,12 @@
 import {
+  createContext,
   FormEvent,
   KeyboardEvent,
   lazy,
   ReactNode,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -47,6 +49,15 @@ import {
   shouldShowRecentProjectsToggle,
   visibleRecentProjects,
 } from "./recentProjects";
+import {
+  AUTH_EXPIRED_EVENT,
+  AUTH_PATHS,
+  isAuthApiPath,
+  notifyAuthExpired,
+  parseAuthFeedback,
+  retryAfterSeconds,
+  type AuthFeedback,
+} from "./auth";
 
 const WorkspacePanel = lazy(() => import("./WorkspacePanel"));
 
@@ -130,6 +141,8 @@ const BUTTON_PRIMARY =
 const BUTTON_SECONDARY =
   "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[#cdd5df] bg-white px-4 py-2 text-sm font-semibold text-[#17243b] transition hover:border-[#93a2b6] hover:bg-[#f7f9fc] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#1756d8]";
 
+const AuthActionsContext = createContext<(() => void) | null>(null);
+
 class ApiClientError extends Error {
   readonly status: number;
   readonly code: string;
@@ -179,7 +192,10 @@ function fillPath(template: string, values: Record<string, string>): string {
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(path, init);
+    response = await fetch(path, {
+      ...init,
+      credentials: init?.credentials ?? "same-origin",
+    });
   } catch {
     throw new ApiClientError(0, {
       code: "CONNECTION_ERROR",
@@ -199,7 +215,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const error = isObject(body) ? body : {};
+    if (response.status === 401 && !isAuthApiPath(path)) {
+      notifyAuthExpired();
+    }
+    const root = isObject(body) ? body : {};
+    const error = isObject(root.error) ? root.error : root;
     throw new ApiClientError(response.status, {
       code: stringValue(error.code, `HTTP_${response.status}`),
       message: stringValue(error.message, "请求未完成，请重试。"),
@@ -449,7 +469,9 @@ const api = {
 };
 
 function parseRoute(): Route {
-  const match = window.location.pathname.match(/^\/project\/([^/]+)\/?$/);
+  const match = window.location.pathname.match(
+    /^\/project\/([^/]+)(?:\/.*)?$/,
+  );
   return match
     ? { kind: "project", projectId: decodeURIComponent(match[1]) }
     : { kind: "home" };
@@ -491,7 +513,25 @@ function AppIcon({
     check: <path d="m5 12 4 4L19 6" />,
     chevron: <path d="m9 18 6-6-6-6" />,
     file: <path d="M6 2h8l4 4v16H6V2Zm8 0v5h5" />,
+    eye: (
+      <>
+        <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+        <circle cx="12" cy="12" r="2.5" />
+      </>
+    ),
+    eyeOff: (
+      <>
+        <path d="m3 3 18 18M10.7 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a15.6 15.6 0 0 1-2.1 2.8M6.5 6.6C4 8.2 2.5 12 2.5 12s3.5 6 9.5 6a9.8 9.8 0 0 0 3.1-.5M10.2 10.2a2.5 2.5 0 0 0 3.6 3.6" />
+      </>
+    ),
     layers: <path d="m12 2 9 5-9 5-9-5 9-5Zm9 10-9 5-9-5m18 5-9 5-9-5" />,
+    lock: (
+      <>
+        <rect x="4" y="10" width="16" height="11" rx="2" />
+        <path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3" />
+      </>
+    ),
+    logout: <path d="M10 5V3H4v18h6v-2m5-3 4-4-4-4m4 4H8" />,
     refresh: (
       <path d="M20 6v5h-5M4 18v-5h5m10.5-2A8 8 0 0 0 5.4 7M4.5 14a8 8 0 0 0 14.1 3" />
     ),
@@ -532,6 +572,421 @@ function Brand({ compact = false }: { compact?: boolean }) {
   );
 }
 
+type GateMessage = {
+  kind: "error" | "status";
+  text: string;
+};
+
+async function responseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+function SessionCheckingScreen() {
+  return (
+    <main className="forge-grid grid min-h-[100dvh] place-items-center overflow-hidden bg-[#f7f8fb] px-4 py-6 text-[#17243b]">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_50%_32%,rgba(52,107,225,.13),transparent_38%)]" />
+      <section
+        className="paper-shadow relative w-full max-w-[420px] rounded-[28px] border border-white bg-white/95 p-6 sm:p-8"
+        aria-busy="true"
+        aria-label="正在检查访问状态"
+      >
+        <Brand />
+        <div className="mt-6 h-1 w-20 overflow-hidden rounded-full bg-[#e4e9f1]">
+          <span className="block h-full w-1/2 animate-pulse rounded-full bg-[#1756d8] motion-reduce:animate-none" />
+        </div>
+        <h1 className="mt-7 text-2xl font-black tracking-[-0.035em]">
+          正在检查访问状态
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-[#657287]" role="status">
+          正在安全地恢复会话，请稍候。
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function AccessGate({
+  disabled,
+  message,
+  onAuthenticated,
+}: {
+  disabled: boolean;
+  message: GateMessage | null;
+  onAuthenticated: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
+  const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<AuthFeedback | null>(null);
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+
+  useEffect(() => {
+    if (disabled) return;
+    const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [disabled]);
+
+  useEffect(() => {
+    if (cooldownUntil === null) return;
+    const update = () => {
+      const next = Math.max(
+        0,
+        Math.ceil((cooldownUntil - Date.now()) / 1_000),
+      );
+      setCooldownRemaining(next);
+      if (next === 0) setCooldownUntil(null);
+    };
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
+
+  const focusInput = () => {
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const submit = async () => {
+    if (
+      password.length === 0 ||
+      submittingRef.current ||
+      disabled ||
+      cooldownRemaining > 0
+    ) {
+      return;
+    }
+
+    submittingRef.current = true;
+    setSubmitting(true);
+    setFeedback(null);
+    try {
+      const response = await fetch(AUTH_PATHS.login, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const body = await responseBody(response);
+
+      if (response.ok) {
+        setPassword("");
+        onAuthenticated();
+        return;
+      }
+
+      if (response.status === 401) {
+        setFeedback({
+          code: "AUTH_INVALID",
+          message: "密码错误，请重试",
+          retryAfterSeconds: 0,
+        });
+        focusInput();
+        return;
+      }
+
+      if (response.status === 429) {
+        const seconds = retryAfterSeconds(
+          body,
+          response.headers.get("Retry-After"),
+        );
+        setCooldownRemaining(seconds);
+        setCooldownUntil(Date.now() + seconds * 1_000);
+        return;
+      }
+
+      const parsed = parseAuthFeedback(body);
+      setFeedback({
+        ...parsed,
+        message:
+          response.status === 400
+            ? "请输入访问密码"
+            : "暂时无法验证，请稍后重试",
+      });
+      focusInput();
+    } catch {
+      setFeedback({
+        code: "AUTH_CONNECTION_ERROR",
+        message: "暂时无法验证，请稍后重试",
+        retryAfterSeconds: 0,
+      });
+      focusInput();
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const cooldownMessage =
+    cooldownRemaining > 0
+      ? `尝试次数过多，请在 ${cooldownRemaining} 秒后重试`
+      : null;
+  const inputDisabled = disabled || submitting;
+  const inputInvalid =
+    feedback?.code === "AUTH_INVALID" || feedback?.code === "AUTH_EMPTY";
+  const submitDisabled =
+    inputDisabled || password.length === 0 || cooldownRemaining > 0;
+  const describedBy = [
+    "access-password-help",
+    feedback ? "access-password-error" : "",
+    !feedback && message && !cooldownMessage ? "access-gate-message" : "",
+    !feedback && cooldownMessage ? "access-password-cooldown" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <main className="forge-grid relative grid min-h-[100dvh] items-center overflow-x-hidden bg-[#f7f8fb] px-4 py-6 text-[#17243b] sm:py-10">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_50%_30%,rgba(52,107,225,.14),transparent_40%)]" />
+      <div className="pointer-events-none fixed left-1/2 top-0 h-48 w-px bg-gradient-to-b from-[#1756d8]/30 to-transparent" />
+      <section className="paper-shadow relative mx-auto w-full max-w-[420px] rounded-[28px] border border-white bg-white/95 p-5 sm:p-8">
+        <Brand />
+        <div
+          className="mt-6 h-1 w-24 rounded-full bg-[linear-gradient(90deg,#1756d8_0_72%,#e9a23b_72%)]"
+          aria-hidden="true"
+        />
+        <div className="mt-7 flex items-start justify-between gap-5">
+          <div>
+            <p className="text-xs font-extrabold uppercase tracking-[0.15em] text-[#557199]">
+              受邀访问
+            </p>
+            <h1 className="mt-2 text-[2rem] font-black tracking-[-0.045em] text-[#13213a]">
+              访问验证
+            </h1>
+          </div>
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#edf3ff] text-[#1756d8] ring-1 ring-[#d6e2fb]">
+            <AppIcon name="lock" className="h-5 w-5" />
+          </span>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-[#657287]">
+          此空间仅向受邀访客开放。输入访问密码，继续使用 Vibe Forge。
+        </p>
+
+        <form
+          className="mt-7"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <label
+            htmlFor="access-password"
+            className="text-sm font-extrabold text-[#27364d]"
+          >
+            访问密码
+          </label>
+          <div className="relative mt-2">
+            <input
+              ref={inputRef}
+              id="access-password"
+              type={passwordVisible ? "text" : "password"}
+              value={password}
+              disabled={inputDisabled}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setFeedback(null);
+              }}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={inputInvalid}
+              aria-describedby={describedBy}
+              className="min-h-12 w-full rounded-xl border border-[#cbd5e2] bg-[#fbfcfe] px-4 py-3 pr-12 text-base text-[#17243b] outline-none transition placeholder:text-[#98a4b5] hover:border-[#9eacc0] focus:border-[#1756d8] focus:bg-white focus:ring-4 focus:ring-[#1756d8]/10 disabled:cursor-not-allowed disabled:bg-[#f0f2f5]"
+              placeholder="请输入访问密码"
+            />
+            <button
+              type="button"
+              disabled={inputDisabled}
+              onClick={() => setPasswordVisible((current) => !current)}
+              className="absolute inset-y-1 right-1 grid w-10 place-items-center rounded-lg text-[#66758a] transition hover:bg-[#eef3fb] hover:text-[#1756d8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#1756d8] disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+              aria-pressed={passwordVisible}
+            >
+              <AppIcon
+                name={passwordVisible ? "eyeOff" : "eye"}
+                className="h-[18px] w-[18px]"
+              />
+            </button>
+          </div>
+          <p
+            id="access-password-help"
+            className="mt-2 text-xs leading-5 text-[#7a8799]"
+          >
+            密码仅用于本次验证，不会保存在浏览器中。
+          </p>
+
+          {feedback && (
+            <p
+              id="access-password-error"
+              role="alert"
+              className="mt-4 rounded-xl border border-[#f0cfcb] bg-[#fff3f1] px-3.5 py-2.5 text-sm font-semibold leading-5 text-[#a43b35]"
+            >
+              {feedback.message}
+            </p>
+          )}
+          {!feedback && cooldownMessage && (
+            <p
+              id="access-password-cooldown"
+              aria-live="polite"
+              className="mt-4 rounded-xl border border-[#ead7ae] bg-[#fff8e8] px-3.5 py-2.5 text-sm font-semibold leading-5 text-[#825d17]"
+            >
+              {cooldownMessage}
+            </p>
+          )}
+          {!feedback && !cooldownMessage && message && (
+            <p
+              id="access-gate-message"
+              role={message.kind === "error" ? "alert" : "status"}
+              className={`mt-4 rounded-xl border px-3.5 py-2.5 text-sm font-semibold leading-5 ${
+                message.kind === "error"
+                  ? "border-[#f0cfcb] bg-[#fff3f1] text-[#a43b35]"
+                  : "border-[#cfdcf4] bg-[#f1f5fd] text-[#31538f]"
+              }`}
+            >
+              {message.text}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitDisabled}
+            className={`${BUTTON_PRIMARY} mt-5 w-full`}
+          >
+            {submitting || disabled ? (
+              <>
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white motion-reduce:animate-none" />
+                {disabled ? "正在退出…" : "验证中…"}
+              </>
+            ) : (
+              <>
+                进入
+                <AppIcon name="arrow" className="h-4 w-4" />
+              </>
+            )}
+          </button>
+          <p className="sr-only" aria-live="polite">
+            {submitting
+              ? "正在验证访问密码"
+              : disabled
+                ? "正在退出访问"
+                : ""}
+          </p>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function AuthBoundary({ children }: { children: ReactNode }) {
+  const [status, setStatus] = useState<
+    "checking" | "authenticated" | "unauthenticated"
+  >("checking");
+  const [message, setMessage] = useState<GateMessage | null>(null);
+  const [logoutPending, setLogoutPending] = useState(false);
+
+  const checkSession = useCallback(async () => {
+    setStatus("checking");
+    setMessage(null);
+    try {
+      const response = await fetch(AUTH_PATHS.session, {
+        credentials: "same-origin",
+      });
+      const body = await responseBody(response);
+      if (
+        response.ok &&
+        isObject(body) &&
+        body.authenticated === true
+      ) {
+        setStatus("authenticated");
+        return;
+      }
+      setStatus("unauthenticated");
+      if (response.status !== 401) {
+        setMessage({
+          kind: "error",
+          text: "暂时无法验证，请稍后重试",
+        });
+      }
+    } catch {
+      setStatus("unauthenticated");
+      setMessage({
+        kind: "error",
+        text: "暂时无法验证，请稍后重试",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkSession();
+  }, [checkSession]);
+
+  useEffect(() => {
+    const expire = () => {
+      setMessage({
+        kind: "error",
+        text: "访问已过期，请重新验证",
+      });
+      setStatus("unauthenticated");
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, expire);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expire);
+  }, []);
+
+  const logout = useCallback(() => {
+    if (logoutPending) return;
+    setLogoutPending(true);
+    setMessage({ kind: "status", text: "正在安全退出…" });
+    setStatus("unauthenticated");
+
+    void (async () => {
+      try {
+        const response = await fetch(AUTH_PATHS.logout, {
+          method: "POST",
+          credentials: "same-origin",
+        });
+        if (!response.ok) {
+          throw new Error("logout failed");
+        }
+        setMessage({ kind: "status", text: "已退出访问" });
+      } catch {
+        setMessage({
+          kind: "error",
+          text: "未能确认退出，请刷新页面后重试",
+        });
+      } finally {
+        setLogoutPending(false);
+      }
+    })();
+  }, [logoutPending]);
+
+  if (status === "checking") return <SessionCheckingScreen />;
+
+  if (status === "unauthenticated") {
+    return (
+      <AccessGate
+        disabled={logoutPending}
+        message={message}
+        onAuthenticated={() => {
+          setMessage(null);
+          setStatus("authenticated");
+        }}
+      />
+    );
+  }
+
+  return (
+    <AuthActionsContext.Provider value={logout}>
+      {children}
+    </AuthActionsContext.Provider>
+  );
+}
+
 function TopBar({
   onHome,
   context,
@@ -539,6 +994,7 @@ function TopBar({
   onHome: () => void;
   context?: ReactNode;
 }) {
+  const logout = useContext(AuthActionsContext);
   const [health, setHealth] = useState<
     "checking" | "ready" | "waiting" | "offline"
   >("checking");
@@ -576,17 +1032,29 @@ function TopBar({
           <Brand />
         </button>
         <div className="min-w-0 flex-1">{context}</div>
-        <div className="flex shrink-0 items-center gap-2 text-xs font-semibold text-[#5b6779]">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              health === "ready"
-                ? "bg-[#1f9d78]"
-                : health === "offline"
-                  ? "bg-[#d65151]"
-                  : "bg-[#d79528]"
-            }`}
-          />
-          <span className="hidden sm:inline">{labels[health]}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[#5b6779]">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                health === "ready"
+                  ? "bg-[#1f9d78]"
+                  : health === "offline"
+                    ? "bg-[#d65151]"
+                    : "bg-[#d79528]"
+              }`}
+            />
+            <span className="hidden lg:inline">{labels[health]}</span>
+          </div>
+          <span className="mx-1 hidden h-5 w-px bg-[#dce2ea] sm:block" />
+          <button
+            type="button"
+            onClick={() => logout?.()}
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl px-2.5 text-xs font-bold text-[#5b6779] transition hover:bg-white hover:text-[#17243b] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1756d8] sm:px-3"
+            aria-label="退出访问"
+          >
+            <AppIcon name="logout" className="h-4 w-4" />
+            <span className="hidden sm:inline">退出访问</span>
+          </button>
         </div>
       </div>
     </header>
@@ -1027,6 +1495,8 @@ function useRunEvents(
     const path = fillPath(PATHS.runEvents.path, { id: runId });
     const source = new EventSource(path);
     let opened = false;
+    let authCheckPending = false;
+    let lastAuthCheck = 0;
     const listeners: Array<[string, EventListener]> = [];
 
     source.onopen = () => {
@@ -1036,6 +1506,20 @@ function useRunEvents(
     };
     source.onerror = () => {
       setConnection(opened ? "reconnecting" : "connecting");
+      const now = Date.now();
+      if (authCheckPending || now - lastAuthCheck < 5_000) return;
+      authCheckPending = true;
+      lastAuthCheck = now;
+      void fetch(AUTH_PATHS.session, { credentials: "same-origin" })
+        .then((response) => {
+          if (response.status === 401) notifyAuthExpired();
+        })
+        .catch(() => {
+          // A transport failure is not proof that the authenticated session ended.
+        })
+        .finally(() => {
+          authCheckPending = false;
+        });
     };
 
     EVENT_NAMES.forEach((eventName) => {
@@ -2156,7 +2640,7 @@ function failureMessage(code: string): string {
   return messages[code] ?? "本轮构建未完成，可以原地重试。";
 }
 
-export default function App() {
+function AuthenticatedApp() {
   const { route, navigate } = useRoute();
   const [bootstrap, setBootstrap] = useState<Bootstrap | undefined>();
 
@@ -2184,5 +2668,13 @@ export default function App() {
         navigate({ kind: "home" });
       }}
     />
+  );
+}
+
+export default function App() {
+  return (
+    <AuthBoundary>
+      <AuthenticatedApp />
+    </AuthBoundary>
   );
 }

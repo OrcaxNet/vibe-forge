@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chromium } from "playwright-core";
 
-const baseURL = "http://127.0.0.1:5173";
+const baseURL = "http://127.0.0.1:41733";
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const projectId = "cold-start-project";
@@ -89,9 +89,18 @@ function json(route, body, status = 200) {
   });
 }
 
-const server = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawn(
+  process.execPath,
+  [
+    "node_modules/vite/bin/vite.js",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "41733",
+    "--strictPort",
+  ],
+  { stdio: ["ignore", "pipe", "pipe"] },
+);
 let serverOutput = "";
 server.stdout.on("data", (chunk) => {
   serverOutput += chunk.toString();
@@ -126,6 +135,12 @@ try {
     );
     await context.route("**/api/**", (route) => {
       const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/session") {
+        return json(route, {
+          authenticated: true,
+          expiresAt: "2026-07-30T20:00:00Z",
+        });
+      }
       if (path === "/api/health") return json(route, { status: "healthy" });
       if (path === `/api/projects/${projectId}`) return json(route, project);
       if (path === `/api/projects/${projectId}/files`) {
