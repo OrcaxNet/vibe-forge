@@ -44,6 +44,16 @@ try {
 
   await page.context().route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/auth/session") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          authenticated: true,
+          expiresAt: "2026-07-30T20:00:00Z",
+        }),
+      });
+    }
     if (path === "/api/health") {
       return route.fulfill({
         status: 200,

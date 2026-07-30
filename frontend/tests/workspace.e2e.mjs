@@ -290,6 +290,12 @@ try {
         body: JSON.stringify(body),
       });
 
+    if (path === "/api/auth/session") {
+      return json({
+        authenticated: true,
+        expiresAt: "2026-07-30T20:00:00Z",
+      });
+    }
     if (path === "/api/health") return json({ status: "healthy" });
     if (path === "/api/runs/run-active/events") {
       return route.fulfill({

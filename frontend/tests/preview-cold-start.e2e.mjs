@@ -109,6 +109,12 @@ try {
     );
     await context.route("**/api/**", (route) => {
       const path = new URL(route.request().url()).pathname;
+      if (path === "/api/auth/session") {
+        return json(route, {
+          authenticated: true,
+          expiresAt: "2026-07-30T20:00:00Z",
+        });
+      }
       if (path === "/api/health") return json(route, { status: "healthy" });
       if (path === `/api/projects/${projectId}`) return json(route, project);
       if (path === `/api/projects/${projectId}/files`) {
