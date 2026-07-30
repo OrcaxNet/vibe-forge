@@ -43,6 +43,13 @@ export type PreviewFailureKind =
 export const PREVIEW_READY_TIMEOUT_MS = SANDPACK_READY_TIMEOUT_MS;
 export const PREVIEW_AUTOMATIC_RETRY_LIMIT = 1;
 export const PREVIEW_RETRY_DELAY_MS = 750;
+export const PREVIEW_TAILWIND_DEPENDENCIES = {
+  "@tailwindcss/browser": "4.3.3",
+} as const;
+
+const TAILWIND_BROWSER_IMPORT = 'import "@tailwindcss/browser";';
+const TAILWIND_PLAY_CDN_SCRIPT =
+  /[ \t]*<script\b[^>]*\bsrc=["']https:\/\/(?:cdn\.tailwindcss\.com\/?(?:\?[^"']*)?|cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@[^"']+)["'][^>]*>\s*<\/script>[ \t]*\r?\n?/gi;
 
 export class PreviewDeadlineError extends Error {
   readonly kind: PreviewFailureKind;
@@ -218,18 +225,15 @@ export function sandpackFiles(
     Object.entries(files).map(([path, code]) => [
       path,
       {
-        // Older stable versions contain a render-blocking Tailwind Play CDN
-        // script. Keep the verified source immutable, but make that optional
-        // styling dependency non-blocking in the runtime sent to Sandpack.
+        // Keep the verified version immutable while upgrading older snapshots
+        // from an unobservable Tailwind Play CDN script to the pinned Sandpack
+        // dependency. Sandpack cannot report ready until this import compiles.
         code:
           path === "/index.html"
-            ? code.replace(
-                /<script([^>]*\bsrc=["']https:\/\/cdn\.tailwindcss\.com\/?["'][^>]*)><\/script>/gi,
-                (tag, attributes: string) =>
-                  /\b(?:async|defer)\b/i.test(attributes)
-                    ? tag
-                    : `<script async${attributes}></script>`,
-              )
+            ? code.replace(TAILWIND_PLAY_CDN_SCRIPT, "")
+            : path === "/src/main.tsx" &&
+                !code.includes(TAILWIND_BROWSER_IMPORT)
+              ? `${TAILWIND_BROWSER_IMPORT}\n${code}`
             : code,
         readOnly: path !== WRITABLE_FILE_PATH,
         hidden: path !== WRITABLE_FILE_PATH,

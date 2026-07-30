@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chromium } from "playwright-core";
+import {
+  startViteTestServer,
+  stopViteTestServer,
+  waitForViteTestServer,
+} from "./vite-test-server.mjs";
 
-const baseURL = "http://127.0.0.1:5173";
+const viteServer = await startViteTestServer({
+  name: "preview-cold-start",
+  portEnv: "PREVIEW_GATE_PORT",
+});
+const { baseURL } = viteServer;
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const projectId = "cold-start-project";
@@ -19,7 +27,7 @@ const files = {
     'import { createRoot } from "react-dom/client"; import App from "./App"; createRoot(document.getElementById("root")!).render(<App />);',
   "/src/index.css": "body { margin: 0; font-family: system-ui; }",
   "/src/App.tsx":
-    'import { useState } from "react"; export default function App() { const [count, setCount] = useState(0); return <main><h1>冷启动已就绪</h1><button onClick={() => setCount(count + 1)}>可交互 {count}</button></main>; }',
+    'import { useState } from "react"; export default function App() { const [count, setCount] = useState(0); return <main className="min-h-screen bg-slate-50 p-8"><h1 className="text-2xl font-bold">冷启动已就绪</h1><button onClick={() => setCount(count + 1)}>可交互 {count}</button></main>; }',
 };
 
 function filesHash(value) {
@@ -67,20 +75,6 @@ const project = {
   versions: [version],
 };
 
-async function waitForServer() {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(baseURL);
-      if (response.ok) return;
-    } catch {
-      // Vite is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error("Vite did not start within 20 seconds");
-}
-
 function json(route, body, status = 200) {
   return route.fulfill({
     status,
@@ -89,20 +83,9 @@ function json(route, body, status = 200) {
   });
 }
 
-const server = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let serverOutput = "";
-server.stdout.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-server.stderr.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-
 let browser;
 try {
-  await waitForServer();
+  await waitForViteTestServer(viteServer);
   browser = await chromium.launch({
     executablePath: chromePath,
     headless: true,
@@ -173,6 +156,18 @@ try {
         .contentFrame();
       const previewBody = previewFrame.locator("body");
       assert.match(await previewBody.innerText(), /冷启动已就绪/);
+      const styles = await previewFrame.locator("main").evaluate((element) => {
+        const mainStyle = getComputedStyle(element);
+        const headingStyle = getComputedStyle(element.querySelector("h1"));
+        return {
+          backgroundColor: mainStyle.backgroundColor,
+          paddingTop: mainStyle.paddingTop,
+          headingFontSize: headingStyle.fontSize,
+        };
+      });
+      assert.equal(styles.paddingTop, "32px");
+      assert.notEqual(styles.backgroundColor, "rgba(0, 0, 0, 0)");
+      assert.equal(styles.headingFontSize, "24px");
       await previewFrame.locator("button").evaluate((button) => button.click());
       await page.waitForTimeout(50);
       assert.match(await previewBody.innerText(), /可交互 1/);
@@ -232,9 +227,9 @@ try {
     `preview cold-start gate passed: ${firstAttemptSuccesses}/${contextCount} fresh contexts ready on attempt 0`,
   );
 } catch (error) {
-  if (serverOutput) process.stderr.write(serverOutput);
+  if (viteServer.output()) process.stderr.write(viteServer.output());
   throw error;
 } finally {
   await browser?.close();
-  server.kill("SIGTERM");
+  await stopViteTestServer(viteServer);
 }

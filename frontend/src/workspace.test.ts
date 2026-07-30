@@ -75,19 +75,33 @@ describe("workspace version integrity", () => {
     expect(shouldStagePreview("version-1", undefined, "version-2")).toBe(true);
   });
 
-  it("keeps legacy Tailwind CDN loading from blocking Sandpack rendering", () => {
+  it("upgrades legacy Tailwind CDN snapshots to the pinned Sandpack runtime", () => {
     const original =
-      '<html><head><script src="https://cdn.tailwindcss.com"></script></head></html>';
+      '<html><head><script async src="https://cdn.tailwindcss.com"></script></head></html>';
+    const main =
+      'import App from "./App";\ncreateRoot(document.getElementById("root")!).render(<App />);';
     const runtimeFiles = sandpackFiles({
       "/index.html": original,
+      "/src/main.tsx": main,
       "/src/App.tsx": "export default 1",
     });
 
-    expect(runtimeFiles["/index.html"].code).toContain(
-      '<script async src="https://cdn.tailwindcss.com"></script>',
+    expect(runtimeFiles["/index.html"].code).not.toContain(
+      "cdn.tailwindcss.com",
+    );
+    expect(runtimeFiles["/src/main.tsx"].code).toBe(
+      `import "@tailwindcss/browser";\n${main}`,
     );
     expect(runtimeFiles["/src/App.tsx"].code).toBe("export default 1");
-    expect(original).not.toContain("async");
+    expect(original).toContain("cdn.tailwindcss.com");
+  });
+
+  it("does not duplicate the Tailwind runtime import in new scaffold snapshots", () => {
+    const main =
+      'import "@tailwindcss/browser";\nimport App from "./App";';
+    const runtimeFiles = sandpackFiles({ "/src/main.tsx": main });
+
+    expect(runtimeFiles["/src/main.tsx"].code).toBe(main);
   });
 
   it("separates validation deadlines from runtime resource deadlines", async () => {

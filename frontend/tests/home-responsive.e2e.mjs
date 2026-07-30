@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
+import {
+  startViteTestServer,
+  stopViteTestServer,
+  waitForViteTestServer,
+} from "./vite-test-server.mjs";
 
-const baseURL = "http://127.0.0.1:5173";
+const viteServer = await startViteTestServer({
+  name: "home-responsive",
+  portEnv: "HOME_E2E_PORT",
+});
+const { baseURL } = viteServer;
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -20,34 +28,9 @@ let projectCount = 6;
 let projectsResponse = "success";
 let projectListRequests = 0;
 
-async function waitForServer() {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(baseURL);
-      if (response.ok) return;
-    } catch {
-      // Vite is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error("Vite did not start within 20 seconds");
-}
-
-const server = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let serverOutput = "";
-server.stdout.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-server.stderr.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-
 let browser;
 try {
-  await waitForServer();
+  await waitForViteTestServer(viteServer);
   browser = await chromium.launch({
     executablePath: chromePath,
     headless: true,
@@ -268,16 +251,9 @@ try {
     "home responsive e2e passed: 6/7 boundary, keyboard toggle, ARIA/focus, retry, refresh reset, 320/390/768/1024px overflow, seventh-card navigation, no duplicate list request",
   );
 } catch (error) {
-  console.error(serverOutput);
+  console.error(viteServer.output());
   throw error;
 } finally {
   if (browser) await browser.close();
-  server.kill("SIGTERM");
-  await new Promise((resolve) => {
-    const timer = setTimeout(resolve, 2_000);
-    server.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+  await stopViteTestServer(viteServer);
 }

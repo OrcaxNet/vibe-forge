@@ -9,10 +9,11 @@ in **SQLite**.
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
 · [Inspect the deployed frontend revision](https://github.com/OrcaxNet/vibe-forge/commit/4774382f80271382005f628722bc3f5cebdeed6f)
 
-> The password-gated demo uses a Cloudflare named tunnel with the fixed
-> `vf.floatflow.com` hostname and runs on a local OrbStack host. The URL remains
-> stable across tunnel restarts, but the single-host deployment is not a
-> highly available production service; see
+> The password-gated demo uses the host-managed Cloudflare `mac-mini` named
+> tunnel with the fixed `vf.floatflow.com` hostname. OrbStack runs only the
+> frontend and backend; the tunnel is a macOS LaunchDaemon and is independent
+> of the container lifecycle. The single-host deployment is not a highly
+> available production service; see
 > [Known limitations](#known-limitations-and-next-steps).
 
 ## What you can demo
@@ -150,6 +151,63 @@ new attempt.
 > **Data deletion warning:** `docker compose down -v` deletes the
 > `vibe-forge-db` volume and all projects, messages, files, runs, and versions.
 > Use `docker compose down` without `-v` to stop the stack and keep data.
+
+### Host-managed Cloudflare Tunnel
+
+The public demo is routed by the existing host Tunnel `mac-mini`; Cloudflare is
+not a Compose service. `/etc/cloudflared/config.yml` contains the following
+ingress before its final `http_status:404` fallback:
+
+```yaml
+- hostname: vf.floatflow.com
+  service: http://localhost:5173
+```
+
+The root-owned LaunchDaemon
+`system/com.cloudflare.cloudflared` runs `/opt/homebrew/bin/cloudflared tunnel
+--config /etc/cloudflared/config.yml run`. Check the local origins, ingress
+rules, daemon, active Tunnel connections, and public routes with:
+
+```bash
+curl -fsS http://127.0.0.1:5173/ >/dev/null
+curl -fsS http://127.0.0.1:8787/api/health
+cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+cloudflared tunnel --config /etc/cloudflared/config.yml ingress rule https://vf.floatflow.com
+launchctl print system/com.cloudflare.cloudflared
+cloudflared tunnel list --name mac-mini
+curl -fsS https://vf.floatflow.com/build-info.json
+curl -fsS https://vbot.floatflow.com/ >/dev/null
+```
+
+Before editing the host config, keep a timestamped root-owned backup beside the
+original:
+
+```bash
+backup_path="/etc/cloudflared/config.yml.backup-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo cp -p /etc/cloudflared/config.yml "$backup_path"
+printf 'backup: %s\n' "$backup_path"
+```
+
+After adding the ingress, validate it with the command above before reloading:
+
+```bash
+sudo launchctl kickstart -k system/com.cloudflare.cloudflared
+```
+
+To roll back, restore that backup to `/etc/cloudflared/config.yml`, validate the
+restored file, restart the LaunchDaemon, and repoint the hostname to the previous
+named Tunnel:
+
+```bash
+backup_path="/etc/cloudflared/config.yml.backup-YYYYMMDDTHHMMSSZ"
+sudo cp -p "$backup_path" /etc/cloudflared/config.yml
+cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+sudo launchctl kickstart -k system/com.cloudflare.cloudflared
+cloudflared tunnel route dns --overwrite-dns vf-forge vf.floatflow.com
+```
+
+Never commit Tunnel credentials or copy them into the repository. Do not run a
+containerized Tunnel alongside the LaunchDaemon after migration.
 
 ## Environment variables
 
@@ -325,8 +383,11 @@ Explicitly outside the MVP:
    unattended:
 
    ```bash
-   docker stop vibe-forge-named vibe-forge-frontend vibe-forge-backend
+   docker stop vibe-forge-frontend vibe-forge-backend
    ```
+
+   This stops only the application. The shared host Tunnel also serves other
+   applications and must remain under LaunchDaemon control.
 
 ## Submission
 
