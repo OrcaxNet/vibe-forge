@@ -1885,7 +1885,7 @@ function ProjectWorkspace({
   const [tab, setTab] = useState<WorkspaceTab>(() =>
     initialArtifactTarget === "source" ? "files" : "build",
   );
-  const [desktopTab, setDesktopTab] =
+  const [detailTab, setDetailTab] =
     useState<Exclude<WorkspaceTab, "build">>(initialDetailTab);
   const [messages, setMessages] = useState<Message[]>(() =>
     bootstrapMatches && bootstrap?.prompt
@@ -1894,16 +1894,21 @@ function ProjectWorkspace({
   );
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
 
+  const selectWorkspaceTab = useCallback((nextTab: WorkspaceTab) => {
+    setTab(nextTab);
+    if (nextTab !== "build") setDetailTab(nextTab);
+  }, []);
+
   useEffect(() => {
     const syncArtifactTarget = () => {
       const target = artifactTargetFromHash(window.location.hash);
-      if (!target) return;
       if (target === "source") {
         setTab("files");
-        setDesktopTab("files");
+        setDetailTab("files");
         return;
       }
       setTab("build");
+      setDetailTab("preview");
     };
 
     syncArtifactTarget();
@@ -2360,7 +2365,7 @@ function ProjectWorkspace({
           <button
             key={item}
             type="button"
-            onClick={() => setTab(item)}
+            onClick={() => selectWorkspaceTab(item)}
             aria-current={tab === item ? "page" : undefined}
             className={`min-h-12 border-b-2 px-3 text-sm font-black focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#1756d8] ${
               tab === item
@@ -2572,10 +2577,10 @@ function ProjectWorkspace({
                 <button
                   key={item}
                   type="button"
-                  onClick={() => setDesktopTab(item)}
-                  aria-current={desktopTab === item ? "page" : undefined}
+                  onClick={() => selectWorkspaceTab(item)}
+                  aria-current={detailTab === item ? "page" : undefined}
                   className={`min-h-10 rounded-t-xl px-5 text-sm font-black focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#1756d8] ${
-                    desktopTab === item
+                    detailTab === item
                       ? "border border-b-white border-[#dce2ea] bg-white text-[#1756d8]"
                       : "text-[#6b788b]"
                   }`}
@@ -2600,7 +2605,7 @@ function ProjectWorkspace({
                 }
               >
                 <WorkspacePanel
-                  tab={tab === "build" ? desktopTab : tab}
+                  tab={detailTab}
                   projectId={projectId}
                   stableVersionId={
                     project?.stableVersionId ??

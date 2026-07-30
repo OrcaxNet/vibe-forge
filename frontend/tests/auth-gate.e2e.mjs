@@ -16,6 +16,7 @@ const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const targetPath = "/project/project-1/files?tab=versions#source";
 const targetURL = `${baseURL}${targetPath}`;
+const noFragmentURL = targetURL.replace("#source", "");
 
 let browser;
 try {
@@ -152,15 +153,31 @@ try {
           401,
         );
       }
-      return json(
-        {
-          code: "PROJECT_LOADING",
-          message: "项目正在恢复",
-          retryable: true,
-        },
-        503,
-      );
+      return json({
+        id: "project-1",
+        title: "深链验证项目",
+        status: "active",
+        updatedAt: "2026-07-30T20:00:00Z",
+        messages: [],
+        workflowStatus: "draft",
+        stateVersion: 1,
+        stateUpdatedAt: "2026-07-30T20:00:00Z",
+        responseUpdatedAt: "2026-07-30T20:00:00Z",
+        stages: [],
+        preview: {},
+        consistency: { ok: true, conflictCodes: [] },
+        runs: [],
+      });
     }
+
+    if (path === "/api/projects/project-1/files") {
+      return json({
+        files: [],
+        writableFilePath: "/src/App.tsx",
+      });
+    }
+
+    if (path === "/api/projects/project-1/versions") return json([]);
 
     return json(
       {
@@ -298,11 +315,80 @@ try {
   );
 
   loginMode = "success";
+  await page.setViewportSize({ width: 1024, height: 900 });
   await password.fill("correct-for-test-only");
   await password.press("Enter");
   const logout = page.getByRole("button", { name: "退出访问" });
   await logout.waitFor();
   assert.equal(page.url(), targetURL);
+
+  const workspaceTabs = [
+    ["预览", "可交互预览"],
+    ["文件", "文件与编辑器"],
+    ["版本", "版本"],
+  ];
+  await page.getByRole("heading", { name: "文件与编辑器" }).waitFor();
+  for (const [tabName, headingName] of workspaceTabs) {
+    const tabButton = page.getByRole("button", {
+      name: tabName,
+      exact: true,
+    });
+    await tabButton.click();
+    await page
+      .getByRole("heading", { name: headingName, exact: true })
+      .waitFor();
+    assert.equal(await tabButton.getAttribute("aria-current"), "page");
+    assert.equal(
+      page.url(),
+      targetURL,
+      "workspace tab changes must preserve the authenticated deep link",
+    );
+  }
+
+  await page.reload();
+  await page.getByRole("heading", { name: "文件与编辑器" }).waitFor();
+  assert.equal(page.url(), targetURL);
+
+  await page.goto(noFragmentURL);
+  await page.getByRole("heading", { name: "可交互预览" }).waitFor();
+  await page.goBack();
+  await page.getByRole("heading", { name: "文件与编辑器" }).waitFor();
+  assert.equal(page.url(), targetURL);
+  await page.goForward();
+  await page.getByRole("heading", { name: "可交互预览" }).waitFor();
+  assert.equal(page.url(), noFragmentURL);
+  await page.goBack();
+  await page.getByRole("heading", { name: "文件与编辑器" }).waitFor();
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 760 });
+    for (const [tabName, headingName] of workspaceTabs) {
+      await page
+        .getByRole("button", { name: tabName, exact: true })
+        .click();
+      await page
+        .getByRole("heading", { name: headingName, exact: true })
+        .waitFor();
+    }
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+      false,
+    );
+  }
+
+  for (const width of [768, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const [tabName, headingName] of workspaceTabs) {
+      await page
+        .getByRole("button", { name: tabName, exact: true })
+        .click();
+      await page
+        .getByRole("heading", { name: headingName, exact: true })
+        .waitFor();
+    }
+  }
 
   protectedRequestUnauthorized = true;
   await page.reload();
@@ -330,7 +416,7 @@ try {
   assert.equal(await page.getByRole("button", { name: "进入" }).isDisabled(), true);
 
   console.log(
-    "auth gate e2e passed: no content flash, raw password submit, Enter, visibility, duplicate guard, 401, 429 cooldown, deep-link restore, expiry, logout, ARIA, 320/390/768/1024px",
+    "auth gate e2e passed: no content flash, raw password submit, Enter, visibility, duplicate guard, 401, 429 cooldown, source deep-link login/tab roundtrip/refresh/history, expiry, logout, ARIA, 320/390/768/1024px",
   );
 } catch (error) {
   console.error(viteServer.output());
