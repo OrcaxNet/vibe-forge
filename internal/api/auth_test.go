@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ func TestNewRejectsInvalidAuthenticationConfiguration(t *testing.T) {
 		password  string
 		secret    string
 		ttl       string
+		proxies   string
 		wantInErr string
 	}{
 		{
@@ -66,11 +68,19 @@ func TestNewRejectsInvalidAuthenticationConfiguration(t *testing.T) {
 			ttl:       "twelve",
 			wantInErr: "APP_AUTH_SESSION_TTL_HOURS",
 		},
+		{
+			name:      "trusted proxy without CIDR prefix",
+			password:  testAccessPassword,
+			secret:    validSecret,
+			proxies:   "172.31.247.10",
+			wantInErr: "APP_AUTH_TRUSTED_PROXY_CIDRS",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setAuthEnvironment(t, "production", tt.password, tt.secret, tt.ttl)
+			t.Setenv("APP_AUTH_TRUSTED_PROXY_CIDRS", tt.proxies)
 			srv, err := New(context.Background())
 			if err == nil {
 				srv.Close()
@@ -373,6 +383,82 @@ func TestAuthenticationRateLimitIsAtomicAcrossConcurrentRequests(t *testing.T) {
 	}
 }
 
+func TestAuthenticationRateLimitIgnoresForwardingHeadersFromUntrustedPeer(t *testing.T) {
+	srv := newAPITestServer(t)
+	srv.auth.now = func() time.Time {
+		return time.Date(2026, 7, 30, 11, 45, 0, 0, time.UTC)
+	}
+
+	for attempt := 1; attempt <= maxLoginFailures+1; attempt++ {
+		headers := map[string]string{
+			"X-Forwarded-For": fmt.Sprintf("198.51.100.%d", attempt),
+			"X-Real-IP":       fmt.Sprintf("203.0.113.%d", attempt),
+		}
+		rec := authRequestWithHeaders(
+			t,
+			srv,
+			http.MethodPost,
+			"/api/auth/login",
+			`{"password":"wrong"}`,
+			nil,
+			"172.31.247.1:4321",
+			headers,
+		)
+		wantStatus := http.StatusUnauthorized
+		if attempt > maxLoginFailures {
+			wantStatus = http.StatusTooManyRequests
+		}
+		if rec.Code != wantStatus {
+			t.Fatalf("attempt %d status = %d, want %d (body=%s)", attempt, rec.Code, wantStatus, rec.Body.String())
+		}
+	}
+}
+
+func TestAuthenticationRateLimitUsesClientFromTrustedProxy(t *testing.T) {
+	srv := newServerWithTrustedProxies(t, "172.31.247.10/32")
+	srv.auth.now = func() time.Time {
+		return time.Date(2026, 7, 30, 11, 50, 0, 0, time.UTC)
+	}
+
+	for attempt := 1; attempt <= maxLoginFailures+1; attempt++ {
+		headers := map[string]string{
+			"X-Forwarded-For": fmt.Sprintf("198.51.100.%d, 203.0.113.70", attempt),
+			"X-Real-IP":       "203.0.113.70",
+		}
+		rec := authRequestWithHeaders(
+			t,
+			srv,
+			http.MethodPost,
+			"/api/auth/login",
+			`{"password":"wrong"}`,
+			nil,
+			"172.31.247.10:4321",
+			headers,
+		)
+		wantStatus := http.StatusUnauthorized
+		if attempt > maxLoginFailures {
+			wantStatus = http.StatusTooManyRequests
+		}
+		if rec.Code != wantStatus {
+			t.Fatalf("client A attempt %d status = %d, want %d (body=%s)", attempt, rec.Code, wantStatus, rec.Body.String())
+		}
+	}
+
+	otherClient := authRequestWithHeaders(
+		t,
+		srv,
+		http.MethodPost,
+		"/api/auth/login",
+		`{"password":"wrong"}`,
+		nil,
+		"172.31.247.10:4321",
+		map[string]string{"X-Forwarded-For": "203.0.113.71"},
+	)
+	if otherClient.Code != http.StatusUnauthorized {
+		t.Fatalf("client B status = %d, want 401 (body=%s)", otherClient.Code, otherClient.Body.String())
+	}
+}
+
 func TestAuthenticationMiddlewareProtectsBusinessAPIs(t *testing.T) {
 	srv := newAPITestServer(t)
 	protected := []struct {
@@ -435,18 +521,64 @@ func TestProductionCookieIsSecure(t *testing.T) {
 	}
 }
 
-func TestRequestSourceUsesTheLastProxyHopAddress(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
-	req.RemoteAddr = "172.18.0.4:4321"
-	req.Header.Set("X-Forwarded-For", "198.51.100.99, 203.0.113.60")
-	if got := requestSource(req); got != "203.0.113.60" {
-		t.Errorf("requestSource = %q, want last proxy-added address", got)
+func TestRequestSourceTrustsOnlyConfiguredProxy(t *testing.T) {
+	auth := &authenticator{
+		trustedProxies: []netip.Prefix{netip.MustParsePrefix("172.31.247.10/32")},
+	}
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		realIP     string
+		want       string
+	}{
+		{
+			name:       "configured proxy uses last forwarded hop",
+			remoteAddr: "172.31.247.10:4321",
+			forwarded:  "198.51.100.99, 203.0.113.60",
+			realIP:     "203.0.113.60",
+			want:       "203.0.113.60",
+		},
+		{
+			name:       "configured proxy falls back to real IP",
+			remoteAddr: "172.31.247.10:4321",
+			forwarded:  "not-an-ip",
+			realIP:     "203.0.113.61",
+			want:       "203.0.113.61",
+		},
+		{
+			name:       "other private peer cannot spoof",
+			remoteAddr: "172.31.247.11:4321",
+			forwarded:  "203.0.113.62",
+			realIP:     "203.0.113.62",
+			want:       "172.31.247.11",
+		},
+		{
+			name:       "loopback peer is not implicitly trusted",
+			remoteAddr: "127.0.0.1:4321",
+			forwarded:  "203.0.113.63",
+			realIP:     "203.0.113.63",
+			want:       "127.0.0.1",
+		},
+		{
+			name:       "public peer cannot spoof",
+			remoteAddr: "198.51.100.20:4321",
+			forwarded:  "203.0.113.64",
+			realIP:     "203.0.113.64",
+			want:       "198.51.100.20",
+		},
 	}
 
-	req.RemoteAddr = "198.51.100.20:4321"
-	req.Header.Set("X-Forwarded-For", "203.0.113.61")
-	if got := requestSource(req); got != "198.51.100.20" {
-		t.Errorf("requestSource trusted a header from a public direct peer: %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+			req.RemoteAddr = tt.remoteAddr
+			req.Header.Set("X-Forwarded-For", tt.forwarded)
+			req.Header.Set("X-Real-IP", tt.realIP)
+			if got := auth.requestSource(req); got != tt.want {
+				t.Errorf("requestSource = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -456,6 +588,7 @@ func setAuthEnvironment(t *testing.T, appEnv, password, secret, ttl string) {
 	t.Setenv("APP_ACCESS_PASSWORD", password)
 	t.Setenv("APP_AUTH_SESSION_SECRET", secret)
 	t.Setenv("APP_AUTH_SESSION_TTL_HOURS", ttl)
+	t.Setenv("APP_AUTH_TRUSTED_PROXY_CIDRS", "")
 	t.Setenv("DATABASE_PATH", ":memory:")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
@@ -474,6 +607,18 @@ func newServerWithAuthentication(t *testing.T, appEnv, password, secret, ttl str
 	return srv
 }
 
+func newServerWithTrustedProxies(t *testing.T, trustedProxies string) *Server {
+	t.Helper()
+	setAuthEnvironment(t, "test", testAccessPassword, testSessionSecret, "")
+	t.Setenv("APP_AUTH_TRUSTED_PROXY_CIDRS", trustedProxies)
+	srv, err := New(context.Background())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	return srv
+}
+
 func authRequest(
 	t *testing.T,
 	srv *Server,
@@ -482,6 +627,20 @@ func authRequest(
 	body string,
 	cookie *http.Cookie,
 	remoteAddr string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	return authRequestWithHeaders(t, srv, method, path, body, cookie, remoteAddr, nil)
+}
+
+func authRequestWithHeaders(
+	t *testing.T,
+	srv *Server,
+	method string,
+	path string,
+	body string,
+	cookie *http.Cookie,
+	remoteAddr string,
+	headers map[string]string,
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	var requestBody *bytes.Reader
@@ -498,6 +657,9 @@ func authRequest(
 	}
 	if cookie != nil {
 		req.AddCookie(cookie)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
 	}
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)

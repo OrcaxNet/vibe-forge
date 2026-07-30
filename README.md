@@ -116,8 +116,10 @@ docker compose up -d --force-recreate backend
 ```
 
 The first build downloads the Go, Node, Alpine, and nginx base images. Subsequent
-builds reuse their caches. Host ports default to `5173` and `8787`; change
-`FRONTEND_PORT` or `BACKEND_PORT` in `.env` if they are occupied.
+builds reuse their caches. The frontend host port defaults to `5173`. The
+backend diagnostics port defaults to `8787` and is bound to `127.0.0.1`, so it
+is not exposed to the LAN; change `FRONTEND_PORT` or `BACKEND_PORT` in `.env` if
+either is occupied.
 
 ### Core smoke
 
@@ -158,12 +160,13 @@ All local values belong in `.env`; `.env.example` contains safe placeholders.
 | `APP_ACCESS_PASSWORD` | Yes | none | Server-only site access password; never use a `VITE_` prefix |
 | `APP_AUTH_SESSION_SECRET` | Yes | none | Random session-signing secret of at least 32 bytes |
 | `APP_AUTH_SESSION_TTL_HOURS` | No | `12` | Access-session lifetime; integer from 1 through 24 |
+| `APP_AUTH_TRUSTED_PROXY_CIDRS` | No | none outside Compose | Comma-separated exact reverse-proxy CIDRs allowed to supply client-address headers |
 | `APP_ENV` | No | production-safe | Set `development` for local HTTP or `production` for a `Secure` cookie |
 | `ANTHROPIC_API_KEY` | One auth mode | empty | Direct API authentication |
 | `ANTHROPIC_AUTH_TOKEN` | Gateway mode | empty | Gateway bearer token |
 | `ANTHROPIC_BASE_URL` | Gateway mode | empty | Anthropic-compatible gateway base URL |
 | `ANTHROPIC_MODEL` | No | `claude-sonnet-5` | Model identifier expected by the selected provider |
-| `BACKEND_PORT` | No | `8787` | Backend host port |
+| `BACKEND_PORT` | No | `8787` | Loopback-only backend diagnostics port |
 | `FRONTEND_PORT` | No | `5173` | Frontend host port |
 | `BUILD_REVISION` | No | `local` | Git SHA embedded in the frontend build manifest |
 | `DATABASE_PATH` | No | `/data/vibe-forge.db` | SQLite path inside the backend container |
@@ -177,7 +180,12 @@ sets an `HttpOnly`, `SameSite=Lax` session cookie (`Secure` in production).
 `GET /api/auth/session` reports the current expiry, while
 `POST /api/auth/logout` clears and revokes the presented session. Apart from
 these three endpoints and `/api/health`, backend API routes require a valid
-session and otherwise return HTTP 401.
+session and otherwise return HTTP 401. The backend ignores `X-Forwarded-For`
+and `X-Real-IP` unless the socket peer matches
+`APP_AUTH_TRUSTED_PROXY_CIDRS`. Compose assigns nginx the fixed
+`172.31.247.10/32` peer and trusts only that address; direct requests to the
+loopback diagnostics port cannot rotate forwarding headers to evade login
+throttling.
 
 ## Developer verification
 
@@ -202,6 +210,7 @@ Repository and Compose checks:
 
 ```bash
 docker compose config --quiet
+./scripts/test-auth-proxy-boundary.sh
 git check-ignore .env
 test -z "$(git ls-files .env)"
 local_access_password="$(sed -n 's/^APP_ACCESS_PASSWORD=//p' .env)"

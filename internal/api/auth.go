@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ type authenticator struct {
 	sessionSecret    []byte
 	sessionTTL       time.Duration
 	secureCookie     bool
+	trustedProxies   []netip.Prefix
 	now              func() time.Time
 	failureMu        sync.Mutex
 	failuresBySource map[string]loginFailureState
@@ -96,6 +98,16 @@ func newAuthenticatorFromEnv(now func() time.Time) (*authenticator, error) {
 			return nil, errors.New("authentication configuration: APP_AUTH_SESSION_TTL_HOURS must be an integer from 1 through 24")
 		}
 		a.sessionTTL = time.Duration(hours) * time.Hour
+	}
+
+	if rawTrustedProxies := strings.TrimSpace(os.Getenv("APP_AUTH_TRUSTED_PROXY_CIDRS")); rawTrustedProxies != "" {
+		for _, rawPrefix := range strings.Split(rawTrustedProxies, ",") {
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(rawPrefix))
+			if err != nil {
+				return nil, errors.New("authentication configuration: APP_AUTH_TRUSTED_PROXY_CIDRS must be a comma-separated list of IP CIDRs")
+			}
+			a.trustedProxies = append(a.trustedProxies, prefix.Masked())
+		}
 	}
 
 	// Unit tests may intentionally exercise an unavailable-auth health state.
@@ -314,7 +326,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := s.auth.now().UTC()
-	source := requestSource(r)
+	source := s.auth.requestSource(r)
 	requestID := requestIDForLog(r)
 	passwordMatches, retryAfter := s.auth.verifyLogin(source, req.Password, now)
 	if retryAfter > 0 {
@@ -428,30 +440,48 @@ func ensureJSONEOF(dec *json.Decoder) error {
 	return err
 }
 
-func requestSource(r *http.Request) string {
+func (a *authenticator) requestSource(r *http.Request) string {
 	remoteHost := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		remoteHost = host
 	}
-	remoteIP := net.ParseIP(remoteHost)
-	if remoteIP != nil && (remoteIP.IsLoopback() || remoteIP.IsPrivate()) {
+	remoteIP, err := netip.ParseAddr(remoteHost)
+	if err == nil {
+		remoteIP = normalizedIP(remoteIP)
+	}
+	if err == nil && a.isTrustedProxy(remoteIP) {
 		forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-		for i := len(forwarded) - 1; i >= 0; i-- {
-			if ip := net.ParseIP(strings.TrimSpace(forwarded[i])); ip != nil {
-				return ip.String()
-			}
+		lastForwarded := strings.TrimSpace(forwarded[len(forwarded)-1])
+		if ip, parseErr := netip.ParseAddr(lastForwarded); parseErr == nil {
+			return normalizedIP(ip).String()
 		}
-		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
-			return ip.String()
+		if ip, parseErr := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Real-IP"))); parseErr == nil {
+			return normalizedIP(ip).String()
 		}
 	}
-	if remoteIP != nil {
+	if err == nil {
 		return remoteIP.String()
 	}
 	if remoteHost != "" {
 		return remoteHost
 	}
 	return "unknown"
+}
+
+func (a *authenticator) isTrustedProxy(ip netip.Addr) bool {
+	for _, prefix := range a.trustedProxies {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedIP(ip netip.Addr) netip.Addr {
+	if ip.Zone() != "" {
+		ip = ip.WithZone("")
+	}
+	return ip.Unmap()
 }
 
 func requestIDForLog(r *http.Request) string {

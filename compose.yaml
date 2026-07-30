@@ -27,6 +27,8 @@ services:
       APP_ACCESS_PASSWORD: ${APP_ACCESS_PASSWORD:-}
       APP_AUTH_SESSION_SECRET: ${APP_AUTH_SESSION_SECRET:-}
       APP_AUTH_SESSION_TTL_HOURS: ${APP_AUTH_SESSION_TTL_HOURS:-12}
+      # Only this exact nginx peer may supply client-address headers.
+      APP_AUTH_TRUSTED_PROXY_CIDRS: ${APP_AUTH_TRUSTED_PROXY_CIDRS:-172.31.247.10/32}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
@@ -34,7 +36,11 @@ services:
     volumes:
       - vibe-forge-db:/data
     ports:
-      - "${BACKEND_PORT:-8787}:8787"
+      # Direct backend access is for local diagnostics only, never the LAN.
+      - "127.0.0.1:${BACKEND_PORT:-8787}:8787"
+    networks:
+      # The backend shares only this fixed-address proxy network with nginx.
+      - auth
     healthcheck:
       # Readiness: auth config, SQLite, and model credentials must all be ready.
       test:
@@ -57,6 +63,12 @@ services:
     depends_on:
       backend:
         condition: service_started
+    networks:
+      # Keep the default network for the separately managed Cloudflare tunnel.
+      default:
+      auth:
+        # Must match the default APP_AUTH_TRUSTED_PROXY_CIDRS above.
+        ipv4_address: 172.31.247.10
     ports:
       - "${FRONTEND_PORT:-5173}:80"
     healthcheck:
@@ -69,6 +81,12 @@ services:
       start_period: 5s
       retries: 5
     restart: unless-stopped
+
+networks:
+  auth:
+    ipam:
+      config:
+        - subnet: 172.31.247.0/24
 
 volumes:
   vibe-forge-db:
