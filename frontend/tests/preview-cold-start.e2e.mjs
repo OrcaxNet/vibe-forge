@@ -19,7 +19,7 @@ const files = {
     'import { createRoot } from "react-dom/client"; import App from "./App"; createRoot(document.getElementById("root")!).render(<App />);',
   "/src/index.css": "body { margin: 0; font-family: system-ui; }",
   "/src/App.tsx":
-    'import { useState } from "react"; export default function App() { const [count, setCount] = useState(0); return <main><h1>冷启动已就绪</h1><button onClick={() => setCount(count + 1)}>可交互 {count}</button></main>; }',
+    'import { useState } from "react"; export default function App() { const [count, setCount] = useState(0); return <main className="min-h-screen bg-slate-50 p-8"><h1 className="text-2xl font-bold">冷启动已就绪</h1><button onClick={() => setCount(count + 1)}>可交互 {count}</button></main>; }',
 };
 
 function filesHash(value) {
@@ -173,6 +173,18 @@ try {
         .contentFrame();
       const previewBody = previewFrame.locator("body");
       assert.match(await previewBody.innerText(), /冷启动已就绪/);
+      const styles = await previewFrame.locator("main").evaluate((element) => {
+        const mainStyle = getComputedStyle(element);
+        const headingStyle = getComputedStyle(element.querySelector("h1"));
+        return {
+          backgroundColor: mainStyle.backgroundColor,
+          paddingTop: mainStyle.paddingTop,
+          headingFontSize: headingStyle.fontSize,
+        };
+      });
+      assert.equal(styles.paddingTop, "32px");
+      assert.notEqual(styles.backgroundColor, "rgba(0, 0, 0, 0)");
+      assert.equal(styles.headingFontSize, "24px");
       await previewFrame.locator("button").evaluate((button) => button.click());
       await page.waitForTimeout(50);
       assert.match(await previewBody.innerText(), /可交互 1/);

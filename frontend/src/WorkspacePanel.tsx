@@ -23,6 +23,7 @@ import {
   PREVIEW_AUTOMATIC_RETRY_LIMIT,
   PREVIEW_READY_TIMEOUT_MS,
   PREVIEW_RETRY_DELAY_MS,
+  PREVIEW_TAILWIND_DEPENDENCIES,
   PreviewDeadlineError,
   sandpackFiles,
   shouldStagePreview,
@@ -397,7 +398,10 @@ function SandboxedPreview({
         <SandpackProvider
           template="react-ts"
           files={files}
-          customSetup={{ entry: "/src/main.tsx" }}
+          customSetup={{
+            entry: "/src/main.tsx",
+            dependencies: PREVIEW_TAILWIND_DEPENDENCIES,
+          }}
           options={{
             activeFile: WRITABLE_FILE_PATH,
             visibleFiles: [WRITABLE_FILE_PATH],
