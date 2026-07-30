@@ -27,7 +27,7 @@ try {
 
   const page = await context.newPage();
   await page.goto(deepLinkURL);
-  await page.getByRole("heading", { name: "验证访问" }).waitFor();
+  await page.getByRole("heading", { name: "访问验证" }).waitFor();
   assert.equal(page.url(), deepLinkURL);
 
   await page.getByLabel("访问密码").fill(password);
@@ -58,7 +58,7 @@ try {
   assert.equal(protectedAfterLogin.status(), 200);
 
   await page.getByRole("button", { name: "退出访问" }).click();
-  await page.getByRole("heading", { name: "验证访问" }).waitFor();
+  await page.getByRole("heading", { name: "访问验证" }).waitFor();
   await page.getByText("已退出访问").waitFor();
   assert.equal(page.url(), deepLinkURL);
   assert.equal(
