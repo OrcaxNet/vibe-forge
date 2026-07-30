@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chromium } from "playwright-core";
+import { startViteTestServer } from "./vite-test-server.mjs";
 
-const baseURL = "http://127.0.0.1:41733";
+const testServer = await startViteTestServer(41733);
+const { baseURL } = testServer;
 const chromePath =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const projectId = "cold-start-project";
@@ -67,20 +68,6 @@ const project = {
   versions: [version],
 };
 
-async function waitForServer() {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(baseURL);
-      if (response.ok) return;
-    } catch {
-      // Vite is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error("Vite did not start within 20 seconds");
-}
-
 function json(route, body, status = 200) {
   return route.fulfill({
     status,
@@ -89,29 +76,8 @@ function json(route, body, status = 200) {
   });
 }
 
-const server = spawn(
-  process.execPath,
-  [
-    "node_modules/vite/bin/vite.js",
-    "--host",
-    "127.0.0.1",
-    "--port",
-    "41733",
-    "--strictPort",
-  ],
-  { stdio: ["ignore", "pipe", "pipe"] },
-);
-let serverOutput = "";
-server.stdout.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-server.stderr.on("data", (chunk) => {
-  serverOutput += chunk.toString();
-});
-
 let browser;
 try {
-  await waitForServer();
   browser = await chromium.launch({
     executablePath: chromePath,
     headless: true,
@@ -247,9 +213,10 @@ try {
     `preview cold-start gate passed: ${firstAttemptSuccesses}/${contextCount} fresh contexts ready on attempt 0`,
   );
 } catch (error) {
+  const serverOutput = testServer.output();
   if (serverOutput) process.stderr.write(serverOutput);
   throw error;
 } finally {
   await browser?.close();
-  server.kill("SIGTERM");
+  await testServer.stop();
 }
