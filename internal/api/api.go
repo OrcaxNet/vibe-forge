@@ -22,7 +22,7 @@ import (
 )
 
 // Version is the backend build version. Bumped per release.
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 // ContractVersion returns the shared contract version the backend is built
 // against (sourced from the embedded contract.json).
@@ -47,6 +47,7 @@ type Server struct {
 	baseURL   string // ANTHROPIC_BASE_URL override (required with authToken)
 	modelName string
 	now       func() time.Time
+	auth      *authenticator
 	logf      func(string, ...any) // redacting logger; no-op until SetLogger
 	loop      LoopRunner           // nil until InitLoop; createRun/retry launch it if set
 	loopCtx   context.Context
@@ -71,13 +72,19 @@ func (s *Server) SetLogger(f func(string, ...any)) {
 // now; a migration failure is returned so the caller refuses to start (PRD-C:
 // migration failure MUST stop startup).
 func New(ctx context.Context) (*Server, error) {
+	now := func() time.Time { return time.Now().UTC() }
+	auth, err := newAuthenticatorFromEnv(now)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		dbPath:    os.Getenv("DATABASE_PATH"),
 		modelKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		authToken: os.Getenv("ANTHROPIC_AUTH_TOKEN"),
 		baseURL:   os.Getenv("ANTHROPIC_BASE_URL"),
 		modelName: os.Getenv("ANTHROPIC_MODEL"),
-		now:       func() time.Time { return time.Now().UTC() },
+		now:       now,
+		auth:      auth,
 		logf:      func(string, ...any) {},
 	}
 	// The loop context outlives any single HTTP request (the agent run continues
@@ -153,6 +160,9 @@ func (s *Server) Close() error {
 func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("POST /api/auth/login", s.login)
+	mux.HandleFunc("GET /api/auth/session", s.authSession)
+	mux.HandleFunc("POST /api/auth/logout", s.logout)
 
 	// Persistence-layer endpoints (FLO-55).
 	mux.HandleFunc("POST /api/projects", s.createProject)
@@ -170,7 +180,7 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/runs/{id}/events", s.runEvents)
 	mux.HandleFunc("POST /api/runs/{id}/retry", s.retryRun)
 	mux.HandleFunc("POST /api/runs/{id}/compile-result", s.compileResult)
-	return mux
+	return s.requireAuthentication(mux)
 }
 
 // Health is the dependency health body (PRD-C §5.1).
@@ -186,6 +196,7 @@ type Health struct {
 type Deps struct {
 	Database Dep `json:"database"`
 	Model    Dep `json:"model"`
+	Auth     Dep `json:"auth"`
 }
 
 // Dep is one dependency's status. Detail is sanitized (no keys/paths/secrets).
@@ -220,7 +231,15 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		h.Dependencies.Model = Dep{Status: "configured"}
 	}
 
-	healthy := h.Dependencies.Database.Status == "ok" && h.Dependencies.Model.Status == "configured"
+	if s.auth == nil || !s.auth.configured {
+		h.Dependencies.Auth = Dep{Status: "not_configured"}
+	} else {
+		h.Dependencies.Auth = Dep{Status: "configured"}
+	}
+
+	healthy := h.Dependencies.Database.Status == "ok" &&
+		h.Dependencies.Model.Status == "configured" &&
+		h.Dependencies.Auth.Status == "configured"
 	if healthy {
 		h.Status = "healthy"
 		writeJSON(w, http.StatusOK, h)

@@ -8,6 +8,8 @@ vendor/
 
 # Local environment / runtime data
 .env
+.env.*
+!.env.example
 *.db
 *.db-wal
 *.db-shm

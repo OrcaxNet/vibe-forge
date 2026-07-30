@@ -168,6 +168,10 @@ func TestReconcileDoesNotTouchTerminalRuns(t *testing.T) {
 // as "model configured" by health and run creation, so the same image runs behind
 // an Anthropic-compatible gateway without an API key.
 func TestAuthTokenConfiguresModel(t *testing.T) {
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("APP_ACCESS_PASSWORD", testAccessPassword)
+	t.Setenv("APP_AUTH_SESSION_SECRET", testSessionSecret)
+	t.Setenv("APP_AUTH_SESSION_TTL_HOURS", "")
 	t.Setenv("DATABASE_PATH", ":memory:")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-xyz")

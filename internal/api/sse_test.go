@@ -67,6 +67,7 @@ func TestSSEReplayAndDedup(t *testing.T) {
 
 	// Fresh connect (no Last-Event-ID): all 3 events, in seq order, terminal last.
 	req := httptest.NewRequest(http.MethodGet, "/api/runs/"+run.RunID+"/events", nil)
+	authenticateTestRequest(t, srv, req)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -91,6 +92,7 @@ func TestSSEReplayAndDedup(t *testing.T) {
 	// Reconnect from Last-Event-ID: 1 -> only events 2 and 3 (no dup of 1).
 	req2 := httptest.NewRequest(http.MethodGet, "/api/runs/"+run.RunID+"/events", nil)
 	req2.Header.Set("Last-Event-ID", "1")
+	authenticateTestRequest(t, srv, req2)
 	rec2 := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec2, req2)
 	evs2 := parseSSE(t, rec2.Body.String())
@@ -124,6 +126,7 @@ func TestSSEInterruptedRunSynthesizesClose(t *testing.T) {
 	srv.store.SetRunStatus(context.Background(), run.RunID, "interrupted")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/runs/"+run.RunID+"/events", nil)
+	authenticateTestRequest(t, srv, req)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
 	evs := parseSSE(t, rec.Body.String())

@@ -32,6 +32,13 @@ drift. Any contract change happens here, once, and is picked up by both.
 | `storage` | SQLite + WAL + foreign_keys, UTC, UUID, migration rules | C §5.3 |
 | `models` | entity field shapes (Project, Run, Version, …) | A/B/C §5 |
 
+FLO-128 adds a server-only access gate to the shared contract:
+`POST /api/auth/login`, `GET /api/auth/session`, and
+`POST /api/auth/logout`. Every other API path except `GET /api/health` is
+protected by default. Authentication errors use the nested
+`{ "error": { "code", "message", "retryAfterSeconds" } }` shape required by
+the access-gate PRD.
+
 `GET /api/projects/:id` additionally returns the FLO-72 durable workflow
 snapshot: `workflowStatus`, `workflowRunId`, monotonic `stateVersion`,
 `stateUpdatedAt`, `responseUpdatedAt`, attempt-aware `stages`, stable
