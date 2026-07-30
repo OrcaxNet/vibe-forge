@@ -1,0 +1,48 @@
+name: Video pipeline
+
+on:
+  pull_request:
+    paths:
+      - "cmd/video-*/**"
+      - "internal/videopipeline/**"
+      - "video-pipeline/**"
+      - "Dockerfile.video-pipeline"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/video-pipeline.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cmd/video-*/**"
+      - "internal/videopipeline/**"
+      - "video-pipeline/**"
+      - "Dockerfile.video-pipeline"
+      - "go.mod"
+      - "go.sum"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Unit and workflow tests
+        run: go test -race ./internal/videopipeline/... ./video-pipeline/contracts
+      - name: Static analysis
+        run: go vet ./internal/videopipeline/... ./cmd/video-control-plane ./cmd/video-mock-provider ./cmd/video-orchestrator-worker
+      - name: Compose contract
+        run: docker compose --env-file video-pipeline/.env.video.example -f video-pipeline/compose.yaml config --quiet
+      - name: Secret boundary
+        run: ./video-pipeline/scripts/check-secrets.sh
+      - name: Build no-GPU service images
+        run: |
+          docker build --build-arg TARGET=video-control-plane -f Dockerfile.video-pipeline -t video-control-plane:test .
+          docker build --build-arg TARGET=video-mock-provider -f Dockerfile.video-pipeline -t video-mock-provider:test .
+          docker build --build-arg TARGET=video-orchestrator-worker -f Dockerfile.video-pipeline -t video-orchestrator-worker:test .

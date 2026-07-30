@@ -8,6 +8,7 @@ vendor/
 
 # Local environment / runtime data
 .env
+video-pipeline/.env.video
 *.db
 *.db-wal
 *.db-shm
