@@ -14,6 +14,10 @@ import (
 // so createRun records a startup failure (503) instead of launching the loop.
 func newAPITestServerNoModel(t *testing.T) *Server {
 	t.Helper()
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("APP_ACCESS_PASSWORD", testAccessPassword)
+	t.Setenv("APP_AUTH_SESSION_SECRET", testSessionSecret)
+	t.Setenv("APP_AUTH_SESSION_TTL_HOURS", "")
 	t.Setenv("DATABASE_PATH", ":memory:")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")

@@ -1,7 +1,8 @@
 # Vibe Forge local-first compose (OrbStack / Docker).
 #
 # One command to run everything: `docker compose up --build`.
-# Copy .env.example to .env and fill in ANTHROPIC_API_KEY first.
+# Copy .env.example to .env and fill in the access-gate values plus one model
+# authentication mode first.
 #
 # Architecture: SQLite (mounted volume) is the single source of truth; Sandpack
 # (in-browser) is the only preview path. No per-project Docker/Vite preview
@@ -13,14 +14,21 @@ services:
       dockerfile: Dockerfile.backend
     image: vibe-forge-backend:dev
     container_name: vibe-forge-backend
-    # `${VAR:-}` keeps `docker compose config` valid even before .env exists;
-    # the backend logs an actionable hint at startup when a required var is empty.
+    # `${VAR:-}` keeps `docker compose config` valid even before .env exists.
+    # Authentication config is fail-closed: the backend refuses to start when
+    # the password or session secret is absent/invalid.
     # Auth is either ANTHROPIC_API_KEY (direct) or ANTHROPIC_AUTH_TOKEN +
     # ANTHROPIC_BASE_URL (bearer-token gateway, e.g. an Anthropic-compatible
     # platform proxy). At least one must be set for the agent loop to run.
     environment:
       PORT: "8787"
       DATABASE_PATH: ${DATABASE_PATH:-/data/vibe-forge.db}
+      APP_ENV: ${APP_ENV:-production}
+      APP_ACCESS_PASSWORD: ${APP_ACCESS_PASSWORD:-}
+      APP_AUTH_SESSION_SECRET: ${APP_AUTH_SESSION_SECRET:-}
+      APP_AUTH_SESSION_TTL_HOURS: ${APP_AUTH_SESSION_TTL_HOURS:-12}
+      # Only this exact nginx peer may supply client-address headers.
+      APP_AUTH_TRUSTED_PROXY_CIDRS: ${APP_AUTH_TRUSTED_PROXY_CIDRS:-172.31.247.10/32}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
@@ -28,14 +36,16 @@ services:
     volumes:
       - vibe-forge-db:/data
     ports:
-      - "${BACKEND_PORT:-8787}:8787"
+      # Direct backend access is for local diagnostics only, never the LAN.
+      - "127.0.0.1:${BACKEND_PORT:-8787}:8787"
+    networks:
+      # The backend shares only this fixed-address proxy network with nginx.
+      - auth
     healthcheck:
-      # Liveness: the container is healthy while the HTTP server responds with
-      # any status (200 ready or 503 not-ready). Readiness detail lives in the
-      # /api/health body, not the container state.
+      # Readiness: auth config, SQLite, and model credentials must all be ready.
       test:
         - CMD-SHELL
-        - "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health | grep -Eq '^[1-5][0-9]{2}$' || exit 1"
+        - "curl -fsS http://127.0.0.1:8787/api/health >/dev/null || exit 1"
       interval: 15s
       timeout: 3s
       start_period: 5s
@@ -53,6 +63,12 @@ services:
     depends_on:
       backend:
         condition: service_started
+    networks:
+      # Keep the default network for the separately managed Cloudflare tunnel.
+      default:
+      auth:
+        # Must match the default APP_AUTH_TRUSTED_PROXY_CIDRS above.
+        ipv4_address: 172.31.247.10
     ports:
       - "${FRONTEND_PORT:-5173}:80"
     healthcheck:
@@ -65,6 +81,12 @@ services:
       start_period: 5s
       retries: 5
     restart: unless-stopped
+
+networks:
+  auth:
+    ipam:
+      config:
+        - subnet: 172.31.247.0/24
 
 volumes:
   vibe-forge-db:

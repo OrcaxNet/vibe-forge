@@ -33,6 +33,8 @@ func main() {
 	// platform proxy); both being absent is the "not ready" case.
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	accessPassword := os.Getenv("APP_ACCESS_PASSWORD")
+	sessionSecret := os.Getenv("APP_AUTH_SESSION_SECRET")
 	if apiKey == "" && authToken == "" {
 		log.Printf("WARNING: no model credentials configured (ANTHROPIC_API_KEY is empty and ANTHROPIC_AUTH_TOKEN is empty). " +
 			"Copy .env.example to .env and set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL for a bearer-token gateway). " +
@@ -56,7 +58,12 @@ func main() {
 	// values are passed in so any accidental leak in an upstream error string is
 	// scrubbed to [REDACTED] before reaching container stdout (FLO-59: logs must
 	// contain no keys, full prompts or generated code).
-	srv.SetLogger(logredact.New(log.Default().Writer(), []string{apiKey, authToken}).Printf)
+	srv.SetLogger(logredact.New(log.Default().Writer(), []string{
+		apiKey,
+		authToken,
+		accessPassword,
+		sessionSecret,
+	}).Printf)
 
 	// Reconcile runs left active by a prior crash: a queued/running run that did
 	// not reach a terminal state is flipped to 'interrupted' so it is not stuck

@@ -9,11 +9,20 @@ import (
 	"testing"
 )
 
+const (
+	testAccessPassword = "unit-test-access-password"
+	testSessionSecret  = "unit-test-session-secret-with-more-than-32-bytes"
+)
+
 // newAPITestServer returns a server backed by an in-memory SQLite DB and a
 // configured model key. It clears the bearer-token env vars so the suite is
 // hermetic against a runner that exports ANTHROPIC_AUTH_TOKEN/BASE_URL.
 func newAPITestServer(t *testing.T) *Server {
 	t.Helper()
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("APP_ACCESS_PASSWORD", testAccessPassword)
+	t.Setenv("APP_AUTH_SESSION_SECRET", testSessionSecret)
+	t.Setenv("APP_AUTH_SESSION_TTL_HOURS", "")
 	t.Setenv("DATABASE_PATH", ":memory:")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
@@ -44,9 +53,22 @@ func doJSON(t *testing.T, srv *Server, method, path, key string, body any) (int,
 	if key != "" {
 		req.Header.Set("Idempotency-Key", key)
 	}
+	authenticateTestRequest(t, srv, req)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
 	return rec.Code, rec.Body.Bytes()
+}
+
+func authenticateTestRequest(t *testing.T, srv *Server, req *http.Request) {
+	t.Helper()
+	if authPublicPath(req.URL.Path) {
+		return
+	}
+	token, expiresAt, err := srv.auth.createSession()
+	if err != nil {
+		t.Fatalf("create authenticated test session: %v", err)
+	}
+	req.AddCookie(srv.auth.sessionCookie(token, expiresAt))
 }
 
 // TestHealthNotReadyStructurallyCorrect is the backend smoke: with no
@@ -60,6 +82,10 @@ func TestHealthNotReadyStructurallyCorrect(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("DATABASE_PATH", "")
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("APP_ACCESS_PASSWORD", "")
+	t.Setenv("APP_AUTH_SESSION_SECRET", "")
+	t.Setenv("APP_AUTH_SESSION_TTL_HOURS", "")
 	srv, err := New(context.Background())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -89,6 +115,9 @@ func TestHealthNotReadyStructurallyCorrect(t *testing.T) {
 	if h.Dependencies.Model.Status != "not_configured" {
 		t.Errorf("model status = %q, want not_configured", h.Dependencies.Model.Status)
 	}
+	if h.Dependencies.Auth.Status != "not_configured" {
+		t.Errorf("auth status = %q, want not_configured", h.Dependencies.Auth.Status)
+	}
 	body := rec.Body.String()
 	for _, secret := range []string{"ANTHROPIC_API_KEY", "sk-", "gho_", "DATABASE_PATH"} {
 		if bytes.Contains(rec.Body.Bytes(), []byte(secret)) {
@@ -111,6 +140,9 @@ func TestHealthReadyWithDeps(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &h)
 	if h.Status != "healthy" {
 		t.Errorf("status = %q, want healthy", h.Status)
+	}
+	if h.Dependencies.Auth.Status != "configured" {
+		t.Errorf("auth status = %q, want configured", h.Dependencies.Auth.Status)
 	}
 }
 

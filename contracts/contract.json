@@ -1,9 +1,9 @@
 {
   "$schema": "https://vibe-forge.dev/contract/v1",
   "name": "vibe-forge",
-  "version": "1.1.0",
-  "description": "Vibe Forge shared contract. Single source of truth for state enums, REST paths, SSE events, idempotency and error structure. Frozen from PRD-A/B/C v1.0 section 5. Both the Go backend and the React frontend MUST consume this file directly (backend via go:embed, frontend via JSON import) so the two cannot drift.",
-  "source": ["PRD-A v1.0 §5", "PRD-B v1.0 §5", "PRD-C v1.0 §5"],
+  "version": "1.2.0",
+  "description": "Vibe Forge shared contract. Single source of truth for state enums, REST paths, SSE events, authentication, idempotency and error structures. Frozen from PRD-A/B/C v1.0 section 5 and extended by FLO-128 PRD v1.0 section 6. Both the Go backend and the React frontend MUST consume this file directly (backend via go:embed, frontend via JSON import) so the two cannot drift.",
+  "source": ["PRD-A v1.0 §5", "PRD-B v1.0 §5", "PRD-C v1.0 §5", "FLO-128 PRD v1.0 §6"],
   "stages": {
     "order": ["pm", "architect", "engineer", "qa"],
     "descriptions": {
@@ -91,6 +91,32 @@
     }
   },
   "paths": {
+    "authLogin": {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "request": { "password": "string" },
+      "success": { "status": 204, "cookie": "HttpOnly access session" },
+      "errors": {
+        "400": "AUTH_PASSWORD_REQUIRED",
+        "401": "AUTH_INVALID",
+        "429": "AUTH_RATE_LIMITED",
+        "503": "AUTH_UNAVAILABLE"
+      }
+    },
+    "authSession": {
+      "method": "GET",
+      "path": "/api/auth/session",
+      "success": {
+        "status": 200,
+        "body": { "authenticated": true, "expiresAt": "ISO-8601" }
+      },
+      "errors": { "401": "AUTH_REQUIRED", "503": "AUTH_UNAVAILABLE" }
+    },
+    "authLogout": {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "success": { "status": 204, "note": "Idempotent; clears and revokes the presented session." }
+    },
     "createProject": {
       "method": "POST",
       "path": "/api/projects",
@@ -189,6 +215,36 @@
       "errors": { "503": "DEPENDENCY_UNAVAILABLE (sanitized message)" }
     }
   },
+  "authentication": {
+    "cookie": {
+      "name": "vf_access_session",
+      "httpOnly": true,
+      "sameSite": "Lax",
+      "secureInProduction": true,
+      "defaultTTLHours": 12,
+      "maxTTLHours": 24
+    },
+    "publicPaths": [
+      "/api/health",
+      "/api/auth/login",
+      "/api/auth/session",
+      "/api/auth/logout"
+    ],
+    "protectedDefault": "Every other API path requires a valid access session.",
+    "rateLimit": {
+      "maxFailures": 5,
+      "windowSeconds": 60,
+      "scope": "request source",
+      "resetOnSuccess": true
+    },
+    "errorStructure": {
+      "error": {
+        "code": "Stable AUTH_* code",
+        "message": "Sanitized user-displayable message",
+        "retryAfterSeconds": "integer"
+      }
+    }
+  },
   "idempotency": {
     "header": "Idempotency-Key",
     "ttlSeconds": 30,
@@ -208,7 +264,12 @@
       "CONFLICT": { "http": 409, "retryable": false },
       "RATE_LIMITED": { "http": 429, "retryable": true },
       "DEPENDENCY_UNAVAILABLE": { "http": 503, "retryable": true },
-      "INTERNAL": { "http": 500, "retryable": true }
+      "INTERNAL": { "http": 500, "retryable": true },
+      "AUTH_PASSWORD_REQUIRED": { "http": 400, "retryable": false },
+      "AUTH_REQUIRED": { "http": 401, "retryable": false },
+      "AUTH_INVALID": { "http": 401, "retryable": false },
+      "AUTH_RATE_LIMITED": { "http": 429, "retryable": true },
+      "AUTH_UNAVAILABLE": { "http": 503, "retryable": true }
     },
     "runFailureCodes": {
       "TIMEOUT": "Run watchdog fired (no effective event within watchdogSeconds).",

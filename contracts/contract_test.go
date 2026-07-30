@@ -91,6 +91,35 @@ func TestIdempotencyAndErrors(t *testing.T) {
 	}
 }
 
+func TestAuthenticationPathsPresent(t *testing.T) {
+	c := Load()
+	want := map[string]string{
+		"authLogin":   "/api/auth/login",
+		"authSession": "/api/auth/session",
+		"authLogout":  "/api/auth/logout",
+	}
+	for name, path := range want {
+		got, ok := c.Paths[name]
+		if !ok {
+			t.Fatalf("missing authentication path %q", name)
+		}
+		if got.Path != path {
+			t.Errorf("%s path = %q, want %q", name, got.Path, path)
+		}
+	}
+	for _, code := range []string{
+		"AUTH_PASSWORD_REQUIRED",
+		"AUTH_REQUIRED",
+		"AUTH_INVALID",
+		"AUTH_RATE_LIMITED",
+		"AUTH_UNAVAILABLE",
+	} {
+		if _, ok := c.Errors.Codes[code]; !ok {
+			t.Errorf("missing authentication error code %q", code)
+		}
+	}
+}
+
 // TestRawIsCanonicalJSON re-parses Raw() to ensure the accessor returns valid,
 // canonical JSON identical to what the frontend imports.
 func TestRawIsCanonicalJSON(t *testing.T) {

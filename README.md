@@ -9,11 +9,11 @@ in **SQLite**.
 · [View the public repository](https://github.com/OrcaxNet/vibe-forge)
 · [Inspect the deployed frontend revision](https://github.com/OrcaxNet/vibe-forge/commit/4774382f80271382005f628722bc3f5cebdeed6f)
 
-> The anonymous demo uses the host-managed Cloudflare `mac-mini` named tunnel
-> with the fixed `vf.floatflow.com` hostname. OrbStack runs only the frontend
-> and backend; the tunnel is a macOS LaunchDaemon and is independent of the
-> container lifecycle. The single-host deployment is not a highly available
-> production service; see
+> The password-gated demo uses the host-managed Cloudflare `mac-mini` named
+> tunnel with the fixed `vf.floatflow.com` hostname. OrbStack runs only the
+> frontend and backend; the tunnel is a macOS LaunchDaemon and is independent
+> of the container lifecycle. The single-host deployment is not a highly
+> available production service; see
 > [Known limitations](#known-limitations-and-next-steps).
 
 ## What you can demo
@@ -86,7 +86,10 @@ cd vibe-forge
 cp .env.example .env
 ```
 
-Edit `.env` and configure exactly one model authentication mode:
+Edit `.env`, replace both access-gate placeholders, and configure exactly one
+model authentication mode. Generate the session secret with a cryptographically
+secure generator such as `openssl rand -hex 32`; it must be at least 32 bytes
+and must differ from the access password.
 
 | Mode | Required values | Use when |
 | --- | --- | --- |
@@ -104,23 +107,27 @@ curl -i http://127.0.0.1:8787/api/health
 Open <http://localhost:5173>. A ready installation returns HTTP 200 with
 `database.status: "ok"` and `model.status: "configured"`.
 
-If credentials are absent or incomplete, the backend still starts so that its
-health and persistence surfaces can be inspected, but `/api/health` returns 503
-with `model.status: "not_configured"` and new agent runs are rejected. Fix
-`.env`, then apply it with:
+If the access password or session secret is absent/invalid, the backend refuses
+to start. If only model credentials are absent or incomplete, the backend starts
+but `/api/health` returns 503 with `model.status: "not_configured"` and new agent
+runs are rejected. Fix `.env`, then apply it with:
 
 ```bash
 docker compose up -d --force-recreate backend
 ```
 
 The first build downloads the Go, Node, Alpine, and nginx base images. Subsequent
-builds reuse their caches. Host ports default to `5173` and `8787`; change
-`FRONTEND_PORT` or `BACKEND_PORT` in `.env` if they are occupied.
+builds reuse their caches. The frontend host port defaults to `5173`. The
+backend diagnostics port defaults to `8787` and is bound to `127.0.0.1`, so it
+is not exposed to the LAN; change `FRONTEND_PORT` or `BACKEND_PORT` in `.env` if
+either is occupied.
 
 ### Core smoke
 
-1. Confirm `/api/health` is HTTP 200 and both dependencies are ready.
-2. Open the home page and submit: `Build a habit tracker where I can add, check,
+1. Confirm `/api/health` is HTTP 200 and the auth, database, and model
+   dependencies are ready.
+2. Open the home page, complete the access check, and submit:
+   `Build a habit tracker where I can add, check,
    and delete habits.`
 3. Wait for all four Build Pulse stages and a usable preview.
 4. Add, complete, and delete one habit in the generated app.
@@ -208,18 +215,35 @@ All local values belong in `.env`; `.env.example` contains safe placeholders.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
+| `APP_ACCESS_PASSWORD` | Yes | none | Server-only site access password; never use a `VITE_` prefix |
+| `APP_AUTH_SESSION_SECRET` | Yes | none | Random session-signing secret of at least 32 bytes |
+| `APP_AUTH_SESSION_TTL_HOURS` | No | `12` | Access-session lifetime; integer from 1 through 24 |
+| `APP_AUTH_TRUSTED_PROXY_CIDRS` | No | none outside Compose | Comma-separated exact reverse-proxy CIDRs allowed to supply client-address headers |
+| `APP_ENV` | No | production-safe | Set `development` for local HTTP or `production` for a `Secure` cookie |
 | `ANTHROPIC_API_KEY` | One auth mode | empty | Direct API authentication |
 | `ANTHROPIC_AUTH_TOKEN` | Gateway mode | empty | Gateway bearer token |
 | `ANTHROPIC_BASE_URL` | Gateway mode | empty | Anthropic-compatible gateway base URL |
 | `ANTHROPIC_MODEL` | No | `claude-sonnet-5` | Model identifier expected by the selected provider |
-| `BACKEND_PORT` | No | `8787` | Backend host port |
+| `BACKEND_PORT` | No | `8787` | Loopback-only backend diagnostics port |
 | `FRONTEND_PORT` | No | `5173` | Frontend host port |
 | `BUILD_REVISION` | No | `local` | Git SHA embedded in the frontend build manifest |
 | `DATABASE_PATH` | No | `/data/vibe-forge.db` | SQLite path inside the backend container |
 
-Credentials are injected only into the backend container. The frontend bundle,
-generated app, API errors, and lifecycle logs must never contain a key, token,
-or private upstream URL.
+Passwords, signing secrets, and model credentials are injected only into the
+backend container. The frontend bundle, generated app, API errors, browser
+storage, and lifecycle logs must never contain them.
+
+The browser authenticates through `POST /api/auth/login`; a successful response
+sets an `HttpOnly`, `SameSite=Lax` session cookie (`Secure` in production).
+`GET /api/auth/session` reports the current expiry, while
+`POST /api/auth/logout` clears and revokes the presented session. Apart from
+these three endpoints and `/api/health`, backend API routes require a valid
+session and otherwise return HTTP 401. The backend ignores `X-Forwarded-For`
+and `X-Real-IP` unless the socket peer matches
+`APP_AUTH_TRUSTED_PROXY_CIDRS`. Compose assigns nginx the fixed
+`172.31.247.10/32` peer and trusts only that address; direct requests to the
+loopback diagnostics port cannot rotate forwarding headers to evade login
+throttling.
 
 ## Developer verification
 
@@ -244,6 +268,13 @@ Repository and Compose checks:
 
 ```bash
 docker compose config --quiet
+./scripts/test-auth-proxy-boundary.sh
+git check-ignore .env
+test -z "$(git ls-files .env)"
+local_access_password="$(sed -n 's/^APP_ACCESS_PASSWORD=//p' .env)"
+test -n "$local_access_password"
+! grep -R --line-number --fixed-strings "$local_access_password" frontend/dist
+unset local_access_password
 git status --short
 ```
 
@@ -314,12 +345,12 @@ Completed MVP:
   history and restore
 - SQLite migrations, idempotency, project isolation, restart reconciliation,
   and persistent OrbStack volume
-- Anonymous HTTPS demo at a fixed hostname and formal 10-prompt release gate
+- Password-gated HTTPS demo at a fixed hostname and formal 10-prompt release gate
   with 0 open P0 defects
 
 Explicitly outside the MVP:
 
-- Login, per-user workspaces, quotas, billing, and production-grade rate limits
+- Per-user accounts, workspaces, quotas, billing, and distributed rate limits
 - A highly available, multi-host production deployment or managed SLA
 - Multi-file generation, arbitrary dependencies, shell access, and per-project
   containers
@@ -344,8 +375,12 @@ Explicitly outside the MVP:
    or network outage can still leave preview unavailable; project data and the
    last stable version remain intact, and **仅重试预览** retries without
    regenerating the app.
-3. **Anonymous access.** Anyone with the demo URL can create projects and spend
-   shared model quota. The self-hosted demo should be stopped when unattended:
+3. **Single shared access gate.** The demo now uses one rotatable server-side
+   access password rather than per-user identities or roles. Login throttling
+   and logout revocation are held in the backend process, so a backend restart
+   clears that transient state while password/session-secret rotation still
+   invalidates existing cookies. The self-hosted demo should be stopped when
+   unattended:
 
    ```bash
    docker stop vibe-forge-frontend vibe-forge-backend
