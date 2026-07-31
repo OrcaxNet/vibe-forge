@@ -8,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -1815,13 +1816,13 @@ function ProjectWorkspaceSkeleton({
         className="mx-auto max-w-[1440px] p-0 md:p-4 lg:p-6"
         aria-busy="true"
       >
-        <div className="md:grid md:min-h-[calc(100vh-7rem)] md:grid-cols-[minmax(360px,0.82fr)_minmax(440px,1.18fr)] md:gap-4 lg:gap-6">
-          <section className="bg-white px-5 py-6 md:rounded-[24px] md:border md:border-[#dce2ea] sm:px-6">
+        <div className="lg:grid lg:min-h-[calc(100vh-7rem)] lg:grid-cols-[minmax(360px,0.82fr)_minmax(440px,1.18fr)] lg:gap-6">
+          <section className="bg-white px-5 py-6 sm:px-6 lg:rounded-[24px] lg:border lg:border-[#dce2ea]">
             <span className="block h-3 w-24 animate-pulse rounded-full bg-[#dfe4eb] motion-reduce:animate-none" />
             <span className="mt-4 block h-7 w-56 max-w-full animate-pulse rounded-lg bg-[#e7ebf0] motion-reduce:animate-none" />
             <BuildPulseSkeleton />
           </section>
-          <section className="hidden bg-white p-6 md:block md:rounded-[24px] md:border md:border-[#dce2ea]">
+          <section className="hidden bg-white p-6 lg:block lg:rounded-[24px] lg:border lg:border-[#dce2ea]">
             <span className="block h-10 w-64 animate-pulse rounded-xl bg-[#e7ebf0] motion-reduce:animate-none" />
             <span className="mt-5 block min-h-[420px] animate-pulse rounded-2xl bg-[#f0f2f5] motion-reduce:animate-none" />
           </section>
@@ -1893,6 +1894,40 @@ function ProjectWorkspace({
       : [],
   );
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const buildPanelRef = useRef<HTMLElement>(null);
+  const [desktopPanelHeight, setDesktopPanelHeight] = useState<number>();
+
+  useLayoutEffect(() => {
+    const buildPanel = buildPanelRef.current;
+    if (!buildPanel) return undefined;
+
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const syncPanelHeight = () => {
+      const nextHeight = desktopQuery.matches
+        ? buildPanel.getBoundingClientRect().height
+        : undefined;
+      setDesktopPanelHeight((currentHeight) => {
+        if (nextHeight === undefined) return undefined;
+        if (
+          currentHeight !== undefined &&
+          Math.abs(currentHeight - nextHeight) < 0.5
+        ) {
+          return currentHeight;
+        }
+        return nextHeight;
+      });
+    };
+
+    const resizeObserver = new ResizeObserver(syncPanelHeight);
+    resizeObserver.observe(buildPanel);
+    desktopQuery.addEventListener("change", syncPanelHeight);
+    syncPanelHeight();
+
+    return () => {
+      resizeObserver.disconnect();
+      desktopQuery.removeEventListener("change", syncPanelHeight);
+    };
+  }, [hasTrustedSnapshot, loadingState]);
 
   const selectWorkspaceTab = useCallback((nextTab: WorkspaceTab) => {
     setTab(nextTab);
@@ -2359,7 +2394,7 @@ function ProjectWorkspace({
 
       <nav
         aria-label="工作台区域"
-        className="sticky top-16 z-30 grid grid-cols-4 border-b border-[#dce2ea] bg-white px-2 md:hidden"
+        className="sticky top-16 z-30 grid grid-cols-4 border-b border-[#dce2ea] bg-white px-2 lg:hidden"
       >
         {(["build", "preview", "files", "versions"] as const).map((item) => (
           <button
@@ -2385,10 +2420,12 @@ function ProjectWorkspace({
       </nav>
 
       <main className="mx-auto max-w-[1440px] p-0 md:p-4 lg:p-6">
-        <div className="md:grid md:min-h-[calc(100vh-7rem)] md:grid-cols-[minmax(360px,0.82fr)_minmax(440px,1.18fr)] md:gap-4 lg:gap-6">
+        <div className="lg:grid lg:grid-cols-[minmax(360px,0.82fr)_minmax(440px,1.18fr)] lg:items-start lg:gap-6">
           <section
+            ref={buildPanelRef}
             aria-labelledby="build-title"
-            className={`${tab === "build" ? "flex" : "hidden"} h-[calc(100dvh-7rem)] flex-col bg-white md:flex md:h-auto md:overflow-hidden md:rounded-[24px] md:border md:border-[#dce2ea] md:shadow-[0_14px_40px_rgba(34,46,66,.06)]`}
+            data-testid="build-workspace-panel"
+            className={`${tab === "build" ? "flex" : "hidden"} h-[calc(100dvh-7rem)] flex-col bg-white lg:flex lg:h-[calc(100vh-7rem)] lg:min-h-0 lg:overflow-hidden lg:rounded-[24px] lg:border lg:border-[#dce2ea] lg:shadow-[0_14px_40px_rgba(34,46,66,.06)]`}
           >
             <div className="shrink-0 border-b border-[#e1e6ed] px-5 py-5 sm:px-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -2410,7 +2447,10 @@ function ProjectWorkspace({
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+            <div
+              data-testid="build-scroll-region"
+              className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6"
+            >
               {messages.length > 0 && (
                 <div className="mb-6 rounded-2xl border border-[#dce2ea] bg-[#f7f9fc] p-4">
                   <p className="text-[11px] font-black uppercase tracking-[0.12em] text-[#7a8697]">
@@ -2570,9 +2610,15 @@ function ProjectWorkspace({
           </section>
 
           <section
-            className={`${tab === "build" ? "hidden" : "block"} min-h-[calc(100vh-7rem)] bg-white md:block md:min-h-0 md:overflow-hidden md:rounded-[24px] md:border md:border-[#dce2ea] md:shadow-[0_14px_40px_rgba(34,46,66,.06)]`}
+            data-testid="detail-workspace-panel"
+            style={
+              desktopPanelHeight === undefined
+                ? undefined
+                : { height: desktopPanelHeight }
+            }
+            className={`${tab === "build" ? "hidden" : "block"} min-h-[calc(100vh-7rem)] bg-white lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden lg:rounded-[24px] lg:border lg:border-[#dce2ea] lg:shadow-[0_14px_40px_rgba(34,46,66,.06)]`}
           >
-            <div className="hidden border-b border-[#e1e6ed] bg-[#f8f9fb] px-3 pt-3 md:flex">
+            <div className="hidden shrink-0 border-b border-[#e1e6ed] bg-[#f8f9fb] px-3 pt-3 lg:flex">
               {(["preview", "files", "versions"] as const).map((item) => (
                 <button
                   key={item}
@@ -2593,11 +2639,11 @@ function ProjectWorkspace({
                 </button>
               ))}
             </div>
-            <div className="h-[calc(100%-3.25rem)]">
+            <div className="min-h-0 lg:flex-1">
               <Suspense
                 fallback={
                   <div
-                    className="grid h-full min-h-[440px] place-items-center text-sm font-bold text-[#69768a]"
+                    className="grid min-h-[440px] place-items-center text-sm font-bold text-[#69768a] lg:h-full lg:min-h-0"
                     aria-live="polite"
                   >
                     正在加载工作区…

@@ -35,7 +35,7 @@ const scaffold = {
 
 const firstApp = `import { useState } from "react";
 export default function App() {
-  const [items, setItems] = useState(["阅读"]);
+  const [items, setItems] = useState(Array.from({ length: 18 }, (_, index) => \`习惯 \${index + 1}\`));
   return <main className="min-h-screen bg-slate-50 p-8">
     <section className="mx-auto max-w-xl rounded-3xl bg-white p-8 shadow-xl">
       <p className="text-sm font-semibold uppercase tracking-widest text-blue-600">Daily rhythm</p>
@@ -51,7 +51,7 @@ export default function App() {
 
 const secondApp = `import { useState } from "react";
 export default function App() {
-  const [items, setItems] = useState(["阅读"]);
+  const [items, setItems] = useState(Array.from({ length: 18 }, (_, index) => \`海蓝习惯 \${index + 1}\`));
   return <main className="min-h-screen bg-sky-50 p-8 text-sky-950">
     <section className="mx-auto max-w-xl rounded-3xl bg-white p-8 shadow-xl">
       <p className="text-sm font-semibold uppercase tracking-widest text-sky-600">Daily rhythm</p>
@@ -131,6 +131,52 @@ async function assertTailwindStyles(previewFrame, heading) {
   assert.notEqual(styles.backgroundColor, "rgba(0, 0, 0, 0)");
   assert.equal(styles.headingFontSize, "24px");
   assert.equal(styles.headingFontWeight, "700");
+}
+
+async function waitForAlignedWorkspacePanels(page, label) {
+  await page.waitForFunction(() => {
+    const build = document.querySelector(
+      '[data-testid="build-workspace-panel"]',
+    );
+    const detail = document.querySelector(
+      '[data-testid="detail-workspace-panel"]',
+    );
+    if (!build || !detail) return false;
+    const buildBox = build.getBoundingClientRect();
+    const detailBox = detail.getBoundingClientRect();
+    return (
+      Math.abs(buildBox.top - detailBox.top) <= 2 &&
+      Math.abs(buildBox.bottom - detailBox.bottom) <= 2
+    );
+  });
+  const metrics = await page.evaluate(() => {
+    const readBox = (selector) => {
+      const box = document.querySelector(selector).getBoundingClientRect();
+      return {
+        top: box.top,
+        bottom: box.bottom,
+        height: box.height,
+      };
+    };
+    return {
+      build: readBox('[data-testid="build-workspace-panel"]'),
+      detail: readBox('[data-testid="detail-workspace-panel"]'),
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    };
+  });
+  assert.ok(
+    Math.abs(metrics.build.top - metrics.detail.top) <= 2,
+    `${label}: panel tops must align`,
+  );
+  assert.ok(
+    Math.abs(metrics.build.bottom - metrics.detail.bottom) <= 2,
+    `${label}: panel bottoms must align`,
+  );
+  assert.ok(
+    metrics.detail.height <= metrics.build.height + 2,
+    `${label}: detail panel must not exceed the build panel`,
+  );
+  return metrics;
 }
 
 function project() {
@@ -304,6 +350,26 @@ try {
         body: "",
       });
     }
+    if (path === "/api/runs/run-layout/events") {
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: "",
+      });
+    }
+    if (
+      path === `/api/projects/${projectId}/runs` &&
+      request.method() === "POST"
+    ) {
+      activeRunMode = true;
+      return json(
+        {
+          runId: "run-layout",
+          attemptId: "attempt-layout",
+        },
+        202,
+      );
+    }
     if (path === `/api/projects/${projectId}`) {
       if (projectRequestFails) {
         return json(
@@ -467,6 +533,48 @@ try {
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
   await assertTailwindStyles(previewFrame, "每日习惯追踪器");
+  const completedPanelMetrics = await waitForAlignedWorkspacePanels(
+    page,
+    "completed desktop workspace",
+  );
+  assert.ok(
+    completedPanelMetrics.build.bottom <=
+      completedPanelMetrics.viewport.height + 1,
+    "aligned desktop panels should remain visible within the viewport",
+  );
+  const previewHeaderBeforeScroll = await page
+    .getByRole("heading", { name: "可交互预览" })
+    .boundingBox();
+  const previewDocumentMetrics = await previewFrame.locator("html").evaluate(() => ({
+    scrollHeight: document.documentElement.scrollHeight,
+    viewportHeight: window.innerHeight,
+  }));
+  assert.ok(
+    previewDocumentMetrics.scrollHeight > previewDocumentMetrics.viewportHeight,
+    "the long generated preview must overflow inside its iframe",
+  );
+  const hostScrollBefore = await page.evaluate(() => window.scrollY);
+  await previewFrame.locator("html").evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  });
+  await previewFrame.getByText("习惯 18", { exact: true }).waitFor();
+  const previewHeaderAfterScroll = await page
+    .getByRole("heading", { name: "可交互预览" })
+    .boundingBox();
+  assert.equal(
+    await page.evaluate(() => window.scrollY),
+    hostScrollBefore,
+    "scrolling the generated preview must not scroll the host page",
+  );
+  assert.ok(
+    previewHeaderBeforeScroll &&
+      previewHeaderAfterScroll &&
+      Math.abs(previewHeaderBeforeScroll.y - previewHeaderAfterScroll.y) <= 1,
+    "the preview title must remain fixed while iframe content scrolls",
+  );
+  await page.screenshot({
+    path: "test-results/workspace-desktop-aligned.png",
+  });
   await page.screenshot({
     path: "test-results/workflow-completed.png",
     fullPage: true,
@@ -515,10 +623,23 @@ try {
   });
   assert.equal(canReadTop, false);
 
-  await page.getByRole("button", { name: "文件" }).click();
-  await page.getByRole("button", { name: "版本" }).click();
-  await page.getByText("当前稳定", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "预览" }).click();
+  for (const [tabName, headingName] of [
+    ["文件", "文件与编辑器"],
+    ["版本", "版本"],
+    ["预览", "可交互预览"],
+  ]) {
+    await page.getByRole("button", { name: tabName, exact: true }).click();
+    await page.getByRole("heading", { name: headingName }).waitFor();
+    const tabMetrics = await waitForAlignedWorkspacePanels(
+      page,
+      `${tabName} tab`,
+    );
+    assert.ok(
+      Math.abs(tabMetrics.detail.height - completedPanelMetrics.detail.height) <=
+        2,
+      `${tabName} tab must preserve the detail panel height`,
+    );
+  }
   await page
     .locator('iframe[title="Sandpack Preview"]')
     .first()
@@ -622,14 +743,63 @@ try {
   await page.getByText("当前稳定", { exact: true }).waitFor();
   await page.getByRole("button", { name: "恢复此版本" }).waitFor();
 
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.reload();
-  await page.getByRole("button", { name: "构建", exact: true }).waitFor();
-  await page.getByRole("button", { name: "版本", exact: true }).waitFor();
-  const hasHorizontalOverflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > window.innerWidth,
+  const buildContentHeightBefore = await page
+    .getByTestId("build-scroll-region")
+    .evaluate((element) => element.scrollHeight);
+  await page
+    .getByLabel("继续描述要修改的内容")
+    .fill("把完成态流程切换为一轮新的动态构建");
+  await page.getByRole("button", { name: "继续修改" }).click();
+  await page
+    .getByText("当前任务正在构建中，完成或失败后可以继续修改。")
+    .waitFor();
+  await page.waitForFunction(
+    (previousHeight) => {
+      const region = document.querySelector(
+        '[data-testid="build-scroll-region"]',
+      );
+      return region && region.scrollHeight !== previousHeight;
+    },
+    buildContentHeightBefore,
   );
-  assert.equal(hasHorizontalOverflow, false);
+  const buildContentHeightAfter = await page
+    .getByTestId("build-scroll-region")
+    .evaluate((element) => element.scrollHeight);
+  assert.notEqual(
+    buildContentHeightAfter,
+    buildContentHeightBefore,
+    "the dynamic run state must change the build column content height",
+  );
+  await waitForAlignedWorkspacePanels(page, "dynamic build content");
+  for (const tabName of ["预览", "文件", "版本"]) {
+    await page.getByRole("button", { name: tabName, exact: true }).click();
+    await waitForAlignedWorkspacePanels(page, `${tabName} dynamic tab`);
+  }
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+    false,
+    "desktop workspace tabs must not create horizontal overflow",
+  );
+
+  activeRunMode = false;
+  for (const viewport of [
+    { width: 768, height: 900 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.reload();
+    await page.getByRole("button", { name: "构建", exact: true }).waitFor();
+    await page.getByRole("button", { name: "版本", exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+      false,
+      `${viewport.width}px workspace must not create horizontal overflow`,
+    );
+  }
 
   activeRunMode = true;
   await page.reload();
@@ -688,7 +858,7 @@ try {
   );
   assert.deepEqual(relevantErrors, []);
   console.log(
-    "workspace e2e passed: no waiting flash, completed restore, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, styled initial load/refresh/tab roundtrip/version switch, no legacy CDN request, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375px",
+    "workspace e2e passed: no waiting flash, completed restore, aligned desktop panels, dynamic resize, long-preview iframe scroll, stable tab height, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, styled initial load/refresh/tab roundtrip/version switch, no legacy CDN request, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375/768px",
   );
 } catch (error) {
   releaseFirstProjectResponse?.();
