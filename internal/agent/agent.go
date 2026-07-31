@@ -531,6 +531,10 @@ func (r *runner) stream(ctx context.Context, messages []anthropic.MessageParam, 
 
 // writeFileTool returns the write_file tool definition. The schema forces path
 // + content; the server enforces that path == /src/App.tsx (422 otherwise).
+// ToolParam.Type is intentionally left at its zero value. The field is optional
+// for custom tools in the Anthropic Messages wire contract, while some
+// Anthropic-compatible providers reject the newer explicit `"type":"custom"`
+// discriminator before they reach the tool schema.
 func writeFileTool() []anthropic.ToolUnionParam {
 	return []anthropic.ToolUnionParam{{
 		OfTool: &anthropic.ToolParam{
@@ -543,7 +547,6 @@ func writeFileTool() []anthropic.ToolUnionParam {
 				},
 				Required: []string{"path", "content"},
 			},
-			Type: anthropic.ToolTypeCustom,
 		},
 	}}
 }
