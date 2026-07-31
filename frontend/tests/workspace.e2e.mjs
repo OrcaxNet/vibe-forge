@@ -179,6 +179,62 @@ async function waitForAlignedWorkspacePanels(page, label) {
   return metrics;
 }
 
+async function assertPreviewFillsRuntimeFrame(page, label) {
+  const metrics = await page.evaluate(() => {
+    const frame = Array.from(
+      document.querySelectorAll('[data-testid="preview-runtime-frame"]'),
+    ).find((element) => element.getAttribute("aria-hidden") !== "true");
+    const iframe = frame?.querySelector('iframe[title="Sandpack Preview"]');
+    const container = iframe?.parentElement;
+    if (!frame || !iframe || !container) return null;
+    const frameBox = frame.getBoundingClientRect();
+    const containerBox = container.getBoundingClientRect();
+    const iframeBox = iframe.getBoundingClientRect();
+    return {
+      frame: {
+        left: frameBox.left,
+        right: frameBox.right,
+        top: frameBox.top,
+        bottom: frameBox.bottom,
+        width: frameBox.width,
+        height: frameBox.height,
+      },
+      container: {
+        left: containerBox.left,
+        right: containerBox.right,
+        top: containerBox.top,
+        bottom: containerBox.bottom,
+        width: containerBox.width,
+        height: containerBox.height,
+      },
+      iframe: {
+        left: iframeBox.left,
+        right: iframeBox.right,
+        top: iframeBox.top,
+        bottom: iframeBox.bottom,
+        width: iframeBox.width,
+        height: iframeBox.height,
+      },
+    };
+  });
+  assert.ok(metrics, `${label}: rendered preview metrics must be available`);
+  assert.ok(
+    Math.abs(metrics.frame.top - metrics.iframe.top) <= 2 &&
+      Math.abs(metrics.frame.bottom - metrics.iframe.bottom) <= 2,
+    `${label}: iframe height must fill the runtime frame (${JSON.stringify(metrics)})`,
+  );
+  assert.ok(
+    Math.abs(metrics.container.bottom - metrics.iframe.bottom) <= 1,
+    `${label}: iframe bottom must fill its Sandpack container (${JSON.stringify(metrics)})`,
+  );
+  assert.ok(
+    Math.abs(metrics.frame.left - metrics.iframe.left) <= 2 &&
+      Math.abs(metrics.frame.right - metrics.iframe.right) <= 2,
+    `${label}: iframe width must fill the runtime frame (${JSON.stringify(metrics)})`,
+  );
+  return metrics;
+}
+
 function project() {
   const completedStages = [
     {
@@ -533,6 +589,7 @@ try {
     .locator('section[data-preview-state="ready"]')
     .waitFor({ timeout: 20_000 });
   await assertTailwindStyles(previewFrame, "每日习惯追踪器");
+  await assertPreviewFillsRuntimeFrame(page, "completed desktop preview");
   const completedPanelMetrics = await waitForAlignedWorkspacePanels(
     page,
     "completed desktop workspace",
@@ -558,6 +615,18 @@ try {
     window.scrollTo(0, document.documentElement.scrollHeight);
   });
   await previewFrame.getByText("习惯 18", { exact: true }).waitFor();
+  const previewScrollEnd = await previewFrame.locator("html").evaluate(() => ({
+    scrollY: window.scrollY,
+    maxScrollY:
+      Math.max(
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+      ) - window.innerHeight,
+  }));
+  assert.ok(
+    Math.abs(previewScrollEnd.scrollY - previewScrollEnd.maxScrollY) <= 1,
+    `the generated preview must reach its scroll end (${JSON.stringify(previewScrollEnd)})`,
+  );
   const previewHeaderAfterScroll = await page
     .getByRole("heading", { name: "可交互预览" })
     .boundingBox();
@@ -858,7 +927,7 @@ try {
   );
   assert.deepEqual(relevantErrors, []);
   console.log(
-    "workspace e2e passed: no waiting flash, completed restore, aligned desktop panels, dynamic resize, long-preview iframe scroll, stable tab height, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, styled initial load/refresh/tab roundtrip/version switch, no legacy CDN request, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375/768px",
+    "workspace e2e passed: no waiting flash, completed restore, aligned desktop panels, full-frame Sandpack preview, dynamic resize, long-preview iframe scroll, stable tab height, four stable artifact links, copied/refreshed/new-tab targets, validation timeout, styled initial load/refresh/tab roundtrip/version switch, no legacy CDN request, resource timeout, retry success, duplicate ready dedupe, sandbox, host continuity, edit lock, trusted-cache failure, recovering conflict report, versions, 375/768px",
   );
 } catch (error) {
   releaseFirstProjectResponse?.();

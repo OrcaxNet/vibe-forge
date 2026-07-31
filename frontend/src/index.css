@@ -65,6 +65,22 @@ button {
   height: 100%;
 }
 
+.sandbox-preview-frame .sp-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100% !important;
+  width: 100%;
+  min-width: 0;
+}
+
+.sandbox-preview-frame .sp-preview,
+.sandbox-preview-frame .sp-preview-container,
+.sandbox-preview-frame .sp-preview-iframe {
+  height: 100% !important;
+  min-height: 0;
+  max-height: none;
+}
+
 .sp-preview-iframe {
   background: #fff;
 }

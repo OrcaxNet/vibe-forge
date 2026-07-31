@@ -394,7 +394,7 @@ function SandboxedPreview({
     <PreviewBoundary
       onError={(message) => onError("runtime_error", message)}
     >
-      <div ref={guardRef} className="h-full min-h-[420px]">
+      <div ref={guardRef} className="min-h-0 min-w-0 flex-1">
         <SandpackProvider
           template="react-ts"
           files={files}
@@ -421,8 +421,8 @@ function SandboxedPreview({
           />
           <SandpackPreview
             ref={previewRef}
-            className="h-full"
-            style={{ height: "100%", minHeight: 420 }}
+            className="min-h-0 flex-1"
+            style={{ height: "100%", minHeight: 0 }}
             showNavigator={false}
             showOpenInCodeSandbox={false}
             showRefreshButton={false}
@@ -917,7 +917,8 @@ export default function WorkspacePanel({
           {runtimes.map((snapshot) => (
             <div
               key={`${snapshot.versionId}-${runtimeAttempts[snapshot.versionId] ?? 0}`}
-              className={`absolute inset-3 overflow-hidden rounded-2xl border border-[#cfd6df] bg-white shadow-[0_18px_50px_rgba(30,43,66,.13)] sm:inset-5 ${
+              data-testid="preview-runtime-frame"
+              className={`sandbox-preview-frame absolute inset-3 flex overflow-hidden rounded-2xl border border-[#cfd6df] bg-white shadow-[0_18px_50px_rgba(30,43,66,.13)] sm:inset-5 ${
                 snapshot.versionId === shownVersionId
                   ? "z-10 opacity-100"
                   : "pointer-events-none z-0 opacity-0"
