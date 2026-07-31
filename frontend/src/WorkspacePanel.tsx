@@ -394,7 +394,7 @@ function SandboxedPreview({
     <PreviewBoundary
       onError={(message) => onError("runtime_error", message)}
     >
-      <div ref={guardRef} className="h-full min-h-[420px]">
+      <div ref={guardRef} className="min-h-0 min-w-0 flex-1">
         <SandpackProvider
           template="react-ts"
           files={files}
@@ -421,8 +421,8 @@ function SandboxedPreview({
           />
           <SandpackPreview
             ref={previewRef}
-            className="h-full"
-            style={{ height: "100%", minHeight: 420 }}
+            className="min-h-0 flex-1"
+            style={{ height: "100%", minHeight: 0 }}
             showNavigator={false}
             showOpenInCodeSandbox={false}
             showRefreshButton={false}
@@ -835,9 +835,9 @@ export default function WorkspacePanel({
         aria-labelledby="preview-title"
         data-preview-state={previewState}
         data-preview-error-kind={previewErrorKind ?? undefined}
-        className="flex h-full min-h-[540px] flex-col"
+        className="flex min-h-[540px] flex-col lg:h-full lg:min-h-0"
       >
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
           <div>
             <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#7a8697]">
               Stable preview
@@ -870,7 +870,7 @@ export default function WorkspacePanel({
 
         {activeRun && (
           <div
-            className="flex items-start gap-3 border-b border-[#efd7a9] bg-[#fff8e9] px-5 py-3 text-sm text-[#76531d]"
+            className="flex shrink-0 items-start gap-3 border-b border-[#efd7a9] bg-[#fff8e9] px-5 py-3 text-sm text-[#76531d]"
             aria-live="polite"
           >
             <span className="mt-1 h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[#e59a29] motion-reduce:animate-none" />
@@ -883,7 +883,7 @@ export default function WorkspacePanel({
 
         {previewNotice && (
           <div
-            className="flex items-center gap-3 border-b border-[#cbd9f2] bg-[#f3f7ff] px-5 py-3 text-sm font-semibold text-[#315a99]"
+            className="flex shrink-0 items-center gap-3 border-b border-[#cbd9f2] bg-[#f3f7ff] px-5 py-3 text-sm font-semibold text-[#315a99]"
             aria-live="polite"
           >
             <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[#1756d8] motion-reduce:animate-none" />
@@ -894,7 +894,7 @@ export default function WorkspacePanel({
         {previewError && (
           <div
             role="alert"
-            className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f0c7c2] bg-[#fff5f3] px-5 py-3"
+            className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[#f0c7c2] bg-[#fff5f3] px-5 py-3"
           >
             <span className="flex items-start gap-2 text-sm font-semibold text-[#963636]">
               <WorkspaceIcon name="warning" className="mt-0.5 h-4 w-4" />
@@ -910,11 +910,15 @@ export default function WorkspacePanel({
           </div>
         )}
 
-        <div className="relative min-h-0 flex-1 overflow-hidden bg-[#e8ebef] p-3 sm:p-5">
+        <div
+          data-testid="preview-scroll-region"
+          className="relative min-h-0 flex-1 overflow-hidden bg-[#e8ebef] p-3 sm:p-5"
+        >
           {runtimes.map((snapshot) => (
             <div
               key={`${snapshot.versionId}-${runtimeAttempts[snapshot.versionId] ?? 0}`}
-              className={`absolute inset-3 overflow-hidden rounded-2xl border border-[#cfd6df] bg-white shadow-[0_18px_50px_rgba(30,43,66,.13)] sm:inset-5 ${
+              data-testid="preview-runtime-frame"
+              className={`sandbox-preview-frame absolute inset-3 flex overflow-hidden rounded-2xl border border-[#cfd6df] bg-white shadow-[0_18px_50px_rgba(30,43,66,.13)] sm:inset-5 ${
                 snapshot.versionId === shownVersionId
                   ? "z-10 opacity-100"
                   : "pointer-events-none z-0 opacity-0"
@@ -979,8 +983,11 @@ export default function WorkspacePanel({
 
   if (tab === "versions") {
     return (
-      <section aria-labelledby="versions-title" className="h-full">
-        <div className="flex items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
+      <section
+        aria-labelledby="versions-title"
+        className="flex min-h-[540px] flex-col lg:h-full lg:min-h-0"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
           <div>
             <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#7a8697]">
               Iteration history
@@ -1002,7 +1009,7 @@ export default function WorkspacePanel({
           </button>
         </div>
 
-        <div className="space-y-3 p-5">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
           {dataError && (
             <div
               role="alert"
@@ -1099,9 +1106,9 @@ export default function WorkspacePanel({
       id="source"
       data-artifact-target="source"
       aria-labelledby="files-title"
-      className="flex h-full min-h-[620px] scroll-mt-24 flex-col target:ring-2 target:ring-inset target:ring-[#1756d8]"
+      className="flex min-h-[620px] scroll-mt-24 flex-col target:ring-2 target:ring-inset target:ring-[#1756d8] lg:h-full lg:min-h-0"
     >
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-[#e1e6ed] px-5 py-4">
         <div>
           <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#7a8697]">
             Workspace
@@ -1126,7 +1133,7 @@ export default function WorkspacePanel({
 
       {activeRun && (
         <div
-          className="flex items-start gap-2 border-b border-[#efd7a9] bg-[#fff8e9] px-5 py-3 text-sm font-semibold text-[#76531d]"
+          className="flex shrink-0 items-start gap-2 border-b border-[#efd7a9] bg-[#fff8e9] px-5 py-3 text-sm font-semibold text-[#76531d]"
           aria-live="polite"
         >
           <WorkspaceIcon name="lock" className="mt-0.5 h-4 w-4 shrink-0" />
@@ -1134,8 +1141,8 @@ export default function WorkspacePanel({
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 md:grid-cols-[210px_minmax(0,1fr)]">
-        <aside className="border-b border-[#e1e6ed] bg-[#f8fafc] p-3 md:border-b-0 md:border-r">
+      <div className="grid min-h-0 flex-1 md:grid-cols-[210px_minmax(0,1fr)] lg:overflow-hidden">
+        <aside className="min-h-0 overflow-y-auto border-b border-[#e1e6ed] bg-[#f8fafc] p-3 md:border-b-0 md:border-r">
           <p className="px-2 pb-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#7c8898]">
             生成业务文件
           </p>
@@ -1190,7 +1197,7 @@ export default function WorkspacePanel({
               setEditorContent(event.target.value);
               setEditorError("");
             }}
-            className="min-h-[360px] flex-1 resize-none bg-[#111827] p-4 font-mono text-[13px] leading-6 text-[#d9e3f0] caret-[#75a7ff] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#4e82e6] read-only:cursor-default read-only:text-[#a9b6c7]"
+            className="min-h-[360px] flex-1 resize-none bg-[#111827] p-4 font-mono text-[13px] leading-6 text-[#d9e3f0] caret-[#75a7ff] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#4e82e6] read-only:cursor-default read-only:text-[#a9b6c7] lg:min-h-0"
           />
           <div className="border-t border-white/10 bg-[#172033] p-3">
             {editorError && (
