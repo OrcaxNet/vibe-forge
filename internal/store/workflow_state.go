@@ -85,6 +85,21 @@ func bumpWorkflowForRunTx(ctx context.Context, tx *sql.Tx, runID, status, now st
 	return pointProjectWorkflowTx(ctx, tx, projectID, runID, status, now)
 }
 
+// bumpProjectWorkflowSnapshotTx advances the comparable project snapshot when
+// state outside the run lifecycle changes, such as a manual stable preview.
+// Missing legacy workflow rows are left for the evidence-based read repair.
+func bumpProjectWorkflowSnapshotTx(ctx context.Context, tx *sql.Tx, projectID, now string) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE project_workflow_states
+		    SET state_version = state_version + 1, updated_at = ?
+		  WHERE project_id = ?`,
+		now, projectID)
+	if err != nil {
+		return fmt.Errorf("advance project workflow snapshot: %w", err)
+	}
+	return nil
+}
+
 func initAttemptStagesTx(ctx context.Context, tx *sql.Tx, runID, attemptID string, attempt int, now string) error {
 	for _, stage := range contracts.Load().Stages.Order {
 		if _, err := tx.ExecContext(ctx,
@@ -255,9 +270,11 @@ func (s *Store) loadWorkflowSnapshotTx(ctx context.Context, tx *sql.Tx, d *Proje
 	if err != nil {
 		return err
 	}
-	if refreshed, err := loadProjectWorkflowTx(ctx, tx, d.ID); err == nil {
-		state = refreshed
+	refreshed, err := loadProjectWorkflowTx(ctx, tx, d.ID)
+	if err != nil {
+		return err
 	}
+	state = refreshed
 
 	d.WorkflowStatus = state.status
 	d.StateVersion = state.version
@@ -384,17 +401,46 @@ func previewWorkflowRunTx(ctx context.Context, tx *sql.Tx, versionID *string) (*
 	if versionID == nil {
 		return nil, nil
 	}
-	var runID sql.NullString
-	err := tx.QueryRowContext(ctx,
-		`SELECT run_id FROM iterations WHERE result_version_id = ? ORDER BY created_at DESC LIMIT 1`,
-		*versionID).Scan(&runID)
-	if err != nil {
-		if isNoRows(err) {
+
+	// A version belongs to exactly one creator iteration through
+	// versions.iteration_id. Manual iterations intentionally have no run of their
+	// own, so their preview provenance is the workflow that produced their base
+	// version. Follow that lineage until the nearest agent-created version.
+	//
+	// Do not look up iterations by result_version_id here: restore iterations can
+	// point at an existing version and would otherwise shadow its real creator.
+	currentVersionID := *versionID
+	seen := make(map[string]struct{})
+	for currentVersionID != "" {
+		if _, exists := seen[currentVersionID]; exists {
+			// Corrupt lineage remains observable as a nil provenance and is turned
+			// into PREVIEW_WORKFLOW_MISMATCH by the consistency reconciler.
 			return nil, nil
 		}
-		return nil, fmt.Errorf("load preview workflow relation: %w", err)
+		seen[currentVersionID] = struct{}{}
+
+		var runID, baseVersionID sql.NullString
+		err := tx.QueryRowContext(ctx,
+			`SELECT i.run_id, i.base_version_id
+			   FROM versions v
+			   JOIN iterations i ON i.id = v.iteration_id
+			  WHERE v.id = ?`,
+			currentVersionID).Scan(&runID, &baseVersionID)
+		if err != nil {
+			if isNoRows(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("load preview workflow relation: %w", err)
+		}
+		if runID.Valid {
+			return ptrNullString(runID), nil
+		}
+		if !baseVersionID.Valid {
+			return nil, nil
+		}
+		currentVersionID = baseVersionID.String
 	}
-	return ptrNullString(runID), nil
+	return nil, nil
 }
 
 func (s *Store) recoverWorkflowTx(ctx context.Context, tx *sql.Tx, d *ProjectDetail) (workflowProjectState, error) {

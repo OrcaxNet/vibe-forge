@@ -20,9 +20,9 @@ export default function App() {
   return <main><h1>{n}</h1></main>;
 }`
 
-// seedStableProject creates a project with one stable version (succeeded run) via
-// the store and returns (projectID, stableVersionID). Seeding through the store
-// avoids launching the agent loop in tests.
+// seedStableProject creates a project with one stable version and a complete,
+// internally consistent succeeded workflow via the store. Seeding through the
+// store avoids launching the agent loop in tests.
 func seedStableProject(t *testing.T, srv *Server) (string, string) {
 	t.Helper()
 	_, body, _, err := srv.store.CreateProject(context.Background(), "", "build an app", "pk")
@@ -42,12 +42,31 @@ func seedStableProject(t *testing.T, srv *Server) (string, string) {
 		RunID string `json:"runId"`
 	}
 	json.Unmarshal(rb, &rr)
-	var iterID string
-	srv.store.DB().QueryRow(`SELECT id FROM iterations WHERE run_id = ?`, rr.RunID).Scan(&iterID)
+	var iterID, attemptID string
+	if err := srv.store.DB().QueryRow(
+		`SELECT i.id, r.active_attempt_id
+		   FROM runs r
+		   JOIN iterations i ON i.run_id = r.id
+		  WHERE r.id = ?`,
+		rr.RunID,
+	).Scan(&iterID, &attemptID); err != nil {
+		t.Fatalf("load run seed state: %v", err)
+	}
+	if err := srv.store.BeginAttempt(context.Background(), rr.RunID, attemptID); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	for _, stage := range []string{"pm", "architect", "engineer", "qa"} {
+		if _, err := srv.store.RecordStageArtifact(
+			context.Background(), rr.RunID, attemptID, stage, stage+"_artifact", "ref:"+stage,
+		); err != nil {
+			t.Fatalf("RecordStageArtifact(%s): %v", stage, err)
+		}
+	}
 
 	v, err := srv.store.CommitVersion(context.Background(), store.CommitInput{
 		ProjectID: p.ID, IterationID: iterID, RunID: rr.RunID,
-		Files: []store.FileSnapshot{{Path: "/src/App.tsx", Content: flo77GoodApp, Readonly: false}},
+		AttemptID: attemptID,
+		Files:     []store.FileSnapshot{{Path: "/src/App.tsx", Content: flo77GoodApp, Readonly: false}},
 	})
 	if err != nil {
 		t.Fatalf("CommitVersion: %v", err)
@@ -109,10 +128,10 @@ func TestWriteFileCompileFailureClassesHTTP(t *testing.T) {
 	pid, stable := seedStableProject(t, srv)
 
 	cases := map[string]string{
-		"invalid JSX":          `export default function App() { return <main><h1>x</main>; }`,
-		"missing default exp":  `const App = () => <main><div>hi</div></main>;`,
-		"unclosed bracket":     `export default function App() { return <main>x</main>; `,
-		"forbidden token":      `export default function App() { void process.env.X; return <main />; }`,
+		"invalid JSX":         `export default function App() { return <main><h1>x</main>; }`,
+		"missing default exp": `const App = () => <main><div>hi</div></main>;`,
+		"unclosed bracket":    `export default function App() { return <main>x</main>; `,
+		"forbidden token":     `export default function App() { void process.env.X; return <main />; }`,
 	}
 	i := 0
 	for name, content := range cases {
@@ -182,5 +201,85 @@ func TestWriteFileCompileFailureThenCorrectSucceedsHTTP(t *testing.T) {
 	json.Unmarshal(body, &iter)
 	if got := projectStableVersionID(t, srv, pid); got != iter.ResultVersionID {
 		t.Fatalf("after corrected save stableVersionId = %q, want %q", got, iter.ResultVersionID)
+	}
+}
+
+func TestWriteFileFailureThenCorrectKeepsWorkflowCompletedHTTP(t *testing.T) {
+	srv := newAPITestServer(t)
+	pid, stable := seedStableProject(t, srv)
+
+	bad := `export default function App() { return <main><h1>broken</main>; }`
+	if status, body := doJSON(t, srv, "PUT", "/api/projects/"+pid+"/files/src/App.tsx", "workflow-bad",
+		map[string]any{
+			"content": bad, "baseVersionId": stable, "idempotencyKey": "workflow-bad",
+		}); status != 422 {
+		t.Fatalf("invalid save status = %d, want 422 (body=%s)", status, body)
+	}
+
+	good := `export default function App() { return <main><h1>fixed</h1></main>; }`
+	status, body := doJSON(t, srv, "PUT", "/api/projects/"+pid+"/files/src/App.tsx", "workflow-good",
+		map[string]any{
+			"content": good, "baseVersionId": stable, "idempotencyKey": "workflow-good",
+		})
+	if status != 202 {
+		t.Fatalf("corrected save status = %d, want 202 (body=%s)", status, body)
+	}
+	var iteration struct {
+		ResultVersionID string `json:"resultVersionId"`
+	}
+	if err := json.Unmarshal(body, &iteration); err != nil {
+		t.Fatalf("decode corrected save: %v", err)
+	}
+
+	type snapshot struct {
+		StableVersionID string `json:"stableVersionId"`
+		WorkflowStatus  string `json:"workflowStatus"`
+		WorkflowRunID   string `json:"workflowRunId"`
+		StateVersion    int64  `json:"stateVersion"`
+		Preview         struct {
+			Version       string `json:"version"`
+			WorkflowRunID string `json:"workflowRunId"`
+		} `json:"preview"`
+		Consistency struct {
+			OK            bool     `json:"ok"`
+			ConflictCodes []string `json:"conflictCodes"`
+		} `json:"consistency"`
+	}
+	loadSnapshot := func() snapshot {
+		t.Helper()
+		status, body := doJSON(t, srv, "GET", "/api/projects/"+pid, "", nil)
+		if status != 200 {
+			t.Fatalf("get project status = %d, want 200 (body=%s)", status, body)
+		}
+		var got snapshot
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode project snapshot: %v", err)
+		}
+		return got
+	}
+
+	first := loadSnapshot()
+	if first.StableVersionID != iteration.ResultVersionID ||
+		first.Preview.Version != iteration.ResultVersionID {
+		t.Fatalf("stable/preview = %q/%q, want %q",
+			first.StableVersionID, first.Preview.Version, iteration.ResultVersionID)
+	}
+	if first.WorkflowStatus != "completed" || !first.Consistency.OK ||
+		len(first.Consistency.ConflictCodes) != 0 {
+		t.Fatalf("workflow snapshot = status %q consistency %#v",
+			first.WorkflowStatus, first.Consistency)
+	}
+	if first.WorkflowRunID == "" || first.Preview.WorkflowRunID != first.WorkflowRunID {
+		t.Fatalf("preview workflowRunId = %q, want top-level run %q",
+			first.Preview.WorkflowRunID, first.WorkflowRunID)
+	}
+
+	reloaded := loadSnapshot()
+	if reloaded.WorkflowStatus != "completed" || !reloaded.Consistency.OK {
+		t.Fatalf("reloaded workflow = status %q consistency %#v",
+			reloaded.WorkflowStatus, reloaded.Consistency)
+	}
+	if reloaded.StateVersion != first.StateVersion {
+		t.Fatalf("reload changed stateVersion: %d -> %d", first.StateVersion, reloaded.StateVersion)
 	}
 }
