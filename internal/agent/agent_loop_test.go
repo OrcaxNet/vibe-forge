@@ -70,6 +70,35 @@ func toolUseMsg(n int, content string) anthropic.Message {
 	}
 }
 
+func TestWriteFileTool_OmitsOptionalCustomTypeOnWire(t *testing.T) {
+	wire, err := json.Marshal(writeFileTool())
+	if err != nil {
+		t.Fatalf("marshal write_file tool: %v", err)
+	}
+
+	var tools []map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &tools); err != nil {
+		t.Fatalf("decode write_file tool wire JSON: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tool count = %d, want 1", len(tools))
+	}
+	if _, present := tools[0]["type"]; present {
+		t.Errorf("custom tool wire JSON contains optional type discriminator: %s", wire)
+	}
+
+	var name string
+	if err := json.Unmarshal(tools[0]["name"], &name); err != nil {
+		t.Fatalf("decode tool name: %v", err)
+	}
+	if name != "write_file" {
+		t.Errorf("tool name = %q, want write_file", name)
+	}
+	if _, present := tools[0]["input_schema"]; !present {
+		t.Errorf("custom tool wire JSON missing input_schema: %s", wire)
+	}
+}
+
 const (
 	goodAppTSX = `import { useState } from "react";
 export default function App() {
