@@ -122,8 +122,18 @@ func (s *Store) WriteFile(ctx context.Context, projectID, content, baseVersionID
 			if err != nil {
 				return 0, nil, fmt.Errorf("cas stable version: %w", err)
 			}
-			if n, _ := casRes.RowsAffected(); n == 0 {
+			n, err := casRes.RowsAffected()
+			if err != nil {
+				return 0, nil, fmt.Errorf("read stable version update count: %w", err)
+			}
+			if n == 0 {
 				return 0, nil, conflict("baseVersionId no longer matches stable version", nil)
+			}
+			// The stable preview is part of ProjectDetail's comparable workflow
+			// snapshot. Advance stateVersion in this same success transaction so
+			// clients can order a concurrent pre-save response behind this one.
+			if err := bumpProjectWorkflowSnapshotTx(ctx, tx, projectID, now); err != nil {
+				return 0, nil, err
 			}
 			resultVID := vID
 			iter := Iteration{
@@ -207,9 +217,9 @@ func formatCompileMessage(errs []compile.Error) string {
 // readonly markers (contract §paths.listFiles). Draft entries are added by
 // FLO-56/FLO-60 during an active run.
 type FileTree struct {
-	StableVersionID *string         `json:"stableVersionId"`
-	Files           []FileTreeEntry `json:"files"`
-	WritableFilePath string         `json:"writableFilePath"`
+	StableVersionID  *string         `json:"stableVersionId"`
+	Files            []FileTreeEntry `json:"files"`
+	WritableFilePath string          `json:"writableFilePath"`
 }
 
 // FileTreeEntry is one node in the file tree.
